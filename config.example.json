@@ -1,0 +1,29 @@
+{
+  "game": {
+    "default_game_id": "demo_game",
+    "games_dir": "games"
+  },
+  "director": {
+    "llm": {
+      "enabled": true,
+      "thinking": false,
+      "api_key": "",
+      "model": "MiniMax-M2.7",
+      "base_url": "https://api.minimaxi.com/v1",
+      "max_retries": 3,
+      "retry_base_delay": 1.0
+    }
+  },
+  "character": {
+    "llm": {
+      "enabled": true,
+      "thinking": false,
+      "api_key": "",
+      "model": "MiniMax-M2.7",
+      "base_url": "https://api.minimaxi.com/v1",
+      "max_retries": 3,
+      "retry_base_delay": 1.0
+    }
+  },
+  "debug": false
+}

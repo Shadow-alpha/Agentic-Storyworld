@@ -1,0 +1,48 @@
+# Ignore everything by default. This repository tracks only frontend/backend code.
+/*
+
+# Repository ignore rules.
+!.gitignore
+!/config.example.json
+/config.json
+
+# Backend source and dependencies.
+!/src/
+!/src/**
+!requirements.txt
+
+# Frontend source and project files.
+!/frontend/
+/frontend/*
+!/frontend/src/
+!/frontend/src/**
+!/frontend/public/
+!/frontend/public/**
+!/frontend/index.html
+!/frontend/package.json
+!/frontend/package-lock.json
+!/frontend/vite.config.js
+!/frontend/README.md
+!/frontend/.gitignore
+
+# Common generated files inside tracked code trees.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# Local runtime, game data, simulations, docs, and project notes remain untracked.
+/games/
+/temp/
+/project_log/
+/scripts/
+/tests/
+/web/
+/story-to-game/
+/story-to-game.skill
+/IMPLEMENTATION_PLAN.md
+/SOP_Full_Game_System.md
+/STARTUP.md
+/test_api.py

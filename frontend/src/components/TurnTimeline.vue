@@ -1,0 +1,58 @@
+<script setup>
+import TurnCard from "./TurnCard.vue";
+
+defineProps({
+  turns: {
+    type: Array,
+    default: () => [],
+  },
+  openingText: {
+    type: String,
+    default: "等待第一轮输入。",
+  },
+  interactive: {
+    type: Boolean,
+    default: false,
+  },
+  statRules: {
+    type: Object,
+    default: () => ({}),
+  },
+  state: {
+    type: Object,
+    default: () => ({}),
+  },
+});
+
+defineEmits(["pick-option"]);
+</script>
+
+<template>
+  <div class="message-list">
+    <article v-if="!turns.length" class="turn-card opening-card">
+      <div class="turn-header">
+        <div>
+          <div class="turn-kicker">Opening</div>
+          <h3>故事开场</h3>
+        </div>
+      </div>
+      <section class="turn-section narrative-section">
+        <div class="section-header">
+          <h4>Visible Narrative</h4>
+        </div>
+        <div class="narrative-box">{{ openingText }}</div>
+      </section>
+    </article>
+
+    <TurnCard
+      v-for="(turn, index) in turns"
+      :key="`${turn.turn_index || 'opening'}-${index}-${turn.is_streaming ? 'stream' : 'done'}`"
+      :turn="turn"
+      :open-by-default="index === turns.length - 1 || turn.is_streaming"
+      :interactive="interactive && index === turns.length - 1"
+      :stat-rules="statRules"
+      :state="state"
+      @pick-option="$emit('pick-option', $event)"
+    />
+  </div>
+</template>
