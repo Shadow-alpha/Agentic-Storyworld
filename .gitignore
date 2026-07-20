@@ -3,6 +3,7 @@
 
 # Repository ignore rules.
 !.gitignore
+!README.md
 !/config.example.json
 /config.json
 
@@ -35,6 +36,7 @@ __pycache__/
 
 # Local runtime, game data, simulations, docs, and project notes remain untracked.
 /games/
+/users/
 /temp/
 /project_log/
 /scripts/

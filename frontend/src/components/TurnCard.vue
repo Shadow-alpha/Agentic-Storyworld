@@ -246,6 +246,14 @@ function normalizeDeltaPath(path) {
   if (path === "relation.user" || path === "relation.player" || path === "relations.user") {
     return "relations.player";
   }
+  const relationRules = props.state?.relation_rules || props.state?.config?.relation_rules || {};
+  const statRules = props.state?.stat_rules || props.state?.config?.stat_rules || {};
+  if (!path.includes(".") && relationRules?.[path]) {
+    return `relations.${path}`;
+  }
+  if (!path.includes(".") && statRules?.[path]) {
+    return `stats.${path}.value`;
+  }
   if (path.startsWith("stats.") && !path.endsWith(".value")) {
     const segments = path.split(".");
     if (segments.length === 2) {
@@ -369,12 +377,6 @@ function buildUpdateRows(stateUpdate) {
   });
 }
 
-function formatUpdateChip(row) {
-  if (!row.before || row.before === "未知") {
-    return `${row.label} ${row.after}`;
-  }
-  return `${row.label} ${row.before} -> ${row.after}`;
-}
 </script>
 
 <template>
@@ -441,9 +443,9 @@ function formatUpdateChip(row) {
           叙事
           <span v-if="turn.active_stage === 'narrating'" class="live-badge">正在叙述...</span>
         </div>
-        <div v-if="timeLabel || sceneLabel" class="scene-chip-list">
-          <span v-if="timeLabel" class="scene-chip">时间：{{ timeLabel }}</span>
-          <span v-if="sceneLabel" class="scene-chip">场景：{{ sceneLabel }}</span>
+        <div v-if="timeLabel || sceneLabel" class="turn-scene-meta">
+          <div v-if="timeLabel" class="turn-scene-line">📅 <strong>时间：</strong>{{ timeLabel }}</div>
+          <div v-if="sceneLabel" class="turn-scene-line">🏘️ <strong>场所：</strong>{{ sceneLabel }}</div>
         </div>
         <NarrativeRenderer
           :narrative="narrativePayload"
@@ -458,16 +460,21 @@ function formatUpdateChip(row) {
       <div v-if="characterOutcomeCards.length" class="outcome-group-list">
         <article v-for="card in characterOutcomeCards" :key="`outcome-${card.id}`" class="outcome-group">
           <strong>{{ card.name }}</strong>
-          <div class="state-chip-list">
+          <div class="state-change-list">
             <span v-if="card.emotion" class="state-chip">情绪 {{ card.emotion }}</span>
-            <span
+            <div
               v-for="row in card.updateRows"
               :key="`${card.id}-${row.label}-${row.before}-${row.after}`"
-              class="state-chip"
+              class="state-change-line"
               :title="row.reason"
             >
-              {{ formatUpdateChip(row) }}
-            </span>
+              <span class="state-change-label">[{{ row.label }}]</span>
+              <span v-if="row.before && row.before !== '未知'" class="state-change-value">
+                {{ row.before }} <span class="state-change-arrow">→</span> {{ row.after }}
+              </span>
+              <span v-else class="state-change-value">{{ row.after }}</span>
+              <small v-if="row.reason">{{ row.reason }}</small>
+            </div>
           </div>
         </article>
       </div>
@@ -475,15 +482,20 @@ function formatUpdateChip(row) {
       <div v-if="directorUpdateGroups.length" class="outcome-group-list">
         <article v-for="group in directorUpdateGroups" :key="group.label" class="outcome-group">
           <strong>{{ group.label }}</strong>
-          <div class="state-chip-list">
-            <span
+          <div class="state-change-list">
+            <div
               v-for="row in group.rows"
               :key="`${group.label}-${row.label}-${row.before}-${row.after}`"
-              class="state-chip"
+              class="state-change-line"
               :title="row.reason"
             >
-              {{ formatUpdateChip(row) }}
-            </span>
+              <span class="state-change-label">[{{ row.label }}]</span>
+              <span v-if="row.before && row.before !== '未知'" class="state-change-value">
+                {{ row.before }} <span class="state-change-arrow">→</span> {{ row.after }}
+              </span>
+              <span v-else class="state-change-value">{{ row.after }}</span>
+              <small v-if="row.reason">{{ row.reason }}</small>
+            </div>
           </div>
         </article>
       </div>
@@ -500,6 +512,7 @@ function formatUpdateChip(row) {
     </section>
 
     <section v-if="interactionOptions.length" class="option-section chat-option-section">
+      <div class="option-title">本轮建议</div>
       <div class="option-list">
         <div
           v-for="(option, index) in interactionOptions"

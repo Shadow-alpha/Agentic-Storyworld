@@ -5,7 +5,7 @@ import GoalBanner from "./components/GoalBanner.vue";
 import PlayerCustomizationForm from "./components/PlayerCustomizationForm.vue";
 import StateSidebar from "./components/StateSidebar.vue";
 import TurnTimeline from "./components/TurnTimeline.vue";
-import { apiGet, apiPost } from "./services/api";
+import { apiGet, apiPost, authHeaders, getAccessToken, setAccessToken } from "./services/api";
 import { consumeSseResponse } from "./services/stream";
 
 const appState = reactive({
@@ -38,6 +38,20 @@ const loadSlotId = ref("");
 const selectedGameId = ref("");
 const isSending = ref(false);
 const customizationCompleted = ref(false);
+const activePanel = ref("records");
+const accessChecked = ref(false);
+const accessRequired = ref(false);
+const accessToken = ref(getAccessToken());
+const inviteCode = ref("");
+const inviteError = ref("");
+
+const panelTabs = [
+  { id: "records", label: "记录" },
+  { id: "goals", label: "目标" },
+  { id: "characters", label: "角色" },
+  { id: "world", label: "世界格局" },
+];
+const customizationTabs = [{ id: "player_profile", label: "玩家信息" }];
 
 const timelineTurns = computed(() => {
   const turns = [...appState.turns];
@@ -46,8 +60,6 @@ const timelineTurns = computed(() => {
   }
   return turns;
 });
-
-const gameMeta = computed(() => `Game: ${appState.gameId || "unknown"} · Turns: ${timelineTurns.value.length}`);
 
 const openingText = computed(() => appState.state?.config?.opening || "等待第一轮输入。");
 const customizationFields = computed(() => appState.state?.config?.player_customization || {});
@@ -345,6 +357,46 @@ async function loadInitialState() {
   setConnectionStatus("Connected", true);
 }
 
+async function initializeAccess() {
+  const status = await apiGet("/api/access/status");
+  accessRequired.value = !!status.enabled;
+  accessChecked.value = true;
+  if (accessRequired.value && !accessToken.value) {
+    setConnectionStatus("Invite Required", true);
+    return;
+  }
+  try {
+    await loadInitialState();
+  } catch (error) {
+    if (accessRequired.value && error.status === 401) {
+      setAccessToken("");
+      accessToken.value = "";
+      setConnectionStatus("Invite Required", true);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function onSubmitInvite() {
+  const code = inviteCode.value.trim();
+  if (!code) {
+    inviteError.value = "请输入邀请码";
+    return;
+  }
+  inviteError.value = "";
+  try {
+    setConnectionStatus("Checking Invite...", true);
+    const payload = await apiPost("/api/access/login", { invite_code: code });
+    setAccessToken(payload.access_token || "");
+    accessToken.value = getAccessToken();
+    await loadInitialState();
+  } catch (error) {
+    inviteError.value = error.message;
+    setConnectionStatus("Invite Failed", false);
+  }
+}
+
 async function sendMessage(userInput) {
   if (isGameEnded.value) {
     return;
@@ -357,6 +409,7 @@ async function sendMessage(userInput) {
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
+        ...authHeaders(),
       },
       body: JSON.stringify({ user_input: userInput }),
     });
@@ -455,20 +508,31 @@ async function onSaveGame() {
   }
 }
 
-async function onLoadGame() {
-  if (!loadSlotId.value) {
+async function onLoadGame(slotId = null) {
+  const targetSlotId = String(slotId || loadSlotId.value || "").trim();
+  if (!targetSlotId) {
     window.alert("请先选择要读取的存档。");
     return;
   }
   try {
     setConnectionStatus("Loading Save...", true);
-    const payload = await apiPost("/api/game/load", { slot_id: loadSlotId.value }, appState.gameId);
+    const payload = await apiPost("/api/game/load", { slot_id: targetSlotId }, appState.gameId);
+    loadSlotId.value = targetSlotId;
     hydrateFromPayload(payload);
     setConnectionStatus("Connected", true);
   } catch (error) {
     setConnectionStatus("Error", false);
     window.alert(error.message);
   }
+}
+
+function onRelogin() {
+  setAccessToken("");
+  accessToken.value = "";
+  inviteCode.value = "";
+  inviteError.value = "";
+  appState.currentStreamingTurn = null;
+  setConnectionStatus("Invite Required", true);
 }
 
 async function onSwitchGame() {
@@ -521,8 +585,12 @@ function onSelectCharacter(characterId) {
 
 onMounted(async () => {
   try {
-    await loadInitialState();
+    await initializeAccess();
   } catch (error) {
+    if (accessRequired.value) {
+      setAccessToken("");
+      accessToken.value = "";
+    }
     setConnectionStatus("Offline", false);
     window.alert(error.message);
   }
@@ -531,7 +599,23 @@ onMounted(async () => {
 
 <template>
   <div class="app-shell">
-    <main class="app-frame">
+    <main v-if="accessChecked && accessRequired && !accessToken" class="invite-shell">
+      <form class="invite-card" @submit.prevent="onSubmitInvite">
+        <p class="eyebrow">Private Test</p>
+        <h1>输入内测邀请码</h1>
+        <p>当前系统处于内测模式，请输入邀请码后继续。</p>
+        <input
+          v-model="inviteCode"
+          type="password"
+          autocomplete="off"
+          placeholder="Invite code"
+        />
+        <button type="submit" class="primary-submit">进入内测</button>
+        <small v-if="inviteError">{{ inviteError }}</small>
+      </form>
+    </main>
+
+    <main v-else class="app-frame">
       <aside class="tool-rail">
         <ControlStrip
           v-model:selected-game-id="selectedGameId"
@@ -545,41 +629,72 @@ onMounted(async () => {
           @reset-game="onResetGame"
           @save-game="onSaveGame"
           @load-game="onLoadGame"
+          @relogin="onRelogin"
         />
       </aside>
 
-      <section class="workspace-layout">
-        <aside class="left-panel">
-          <GoalBanner
-            :goals-config="appState.state.goals"
-            :streaming-turn="appState.currentStreamingTurn"
-            @activate-goal="onActivateGoal"
-            @deactivate-goal="onDeactivateGoal"
-          />
-
-          <StateSidebar
-            :state="appState.state"
-            :selected-character-id="appState.selectedCharacterId"
-            @select-character="onSelectCharacter"
-          />
-        </aside>
-
-        <section class="right-panel">
-          <PlayerCustomizationForm
-            v-if="needsPlayerCustomization"
-            :fields="customizationFields"
-            @submit="onSubmitPlayerCustomization"
-          />
+      <section class="workspace-layout unified-workspace">
+        <section class="content-panel">
+          <template v-if="needsPlayerCustomization">
+            <nav class="content-tabs opening-tabs" aria-label="开局信息">
+              <button
+                v-for="tab in customizationTabs"
+                :key="tab.id"
+                type="button"
+                class="content-tab-button active"
+              >
+                {{ tab.label }}
+              </button>
+            </nav>
+            <div class="content-body">
+              <PlayerCustomizationForm
+                :fields="customizationFields"
+                @submit="onSubmitPlayerCustomization"
+              />
+            </div>
+          </template>
 
           <template v-else>
-            <TurnTimeline
-              :turns="timelineTurns"
-              :opening-text="openingText"
-              :stat-rules="appState.state.stat_rules"
-              :state="appState.state"
-              :interactive="!inputDisabled"
-              @pick-option="onPickChoice"
-            />
+            <nav class="content-tabs" aria-label="内容切换">
+              <button
+                v-for="tab in panelTabs"
+                :key="tab.id"
+                type="button"
+                class="content-tab-button"
+                :class="{ active: activePanel === tab.id }"
+                @click="activePanel = tab.id"
+              >
+                {{ tab.label }}
+              </button>
+            </nav>
+
+            <div class="content-body">
+              <TurnTimeline
+                v-if="activePanel === 'records'"
+                :turns="timelineTurns"
+                :opening-text="openingText"
+                :stat-rules="appState.state.stat_rules"
+                :state="appState.state"
+                :interactive="!inputDisabled"
+                @pick-option="onPickChoice"
+              />
+
+              <GoalBanner
+                v-else-if="activePanel === 'goals'"
+                :goals-config="appState.state.goals"
+                :streaming-turn="appState.currentStreamingTurn"
+                @activate-goal="onActivateGoal"
+                @deactivate-goal="onDeactivateGoal"
+              />
+
+              <StateSidebar
+                v-else
+                :panel="activePanel"
+                :state="appState.state"
+                :selected-character-id="appState.selectedCharacterId"
+                @select-character="onSelectCharacter"
+              />
+            </div>
 
             <form class="input-dock chat-form" @submit.prevent="onSubmitChat">
             <textarea

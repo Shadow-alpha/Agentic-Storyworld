@@ -16,11 +16,12 @@ class StateManager:
     STATIC_WORLD_KEYS = {"world_id", "map_locations", "organizations", "description", "summary"}
     STATIC_USER_KEYS = {"name"}
 
-    def __init__(self, game_root: Path) -> None:
+    def __init__(self, game_root: Path, user_game_root: Path | None = None) -> None:
         self.game_root = game_root
         self.base_dir = game_root / "base"
-        self.runtime_dir = game_root / "runtime"
-        self.saves_dir = game_root / "saves"
+        self.user_game_root = user_game_root or game_root
+        self.runtime_dir = self.user_game_root / "runtime"
+        self.saves_dir = self.user_game_root / "saves"
         self.runtime_state: dict[str, Any] | None = None
         self.logs: dict[str, list[dict[str, Any]]] = {"turn_log": []}
         self.static_state: dict[str, Any] = self._load_static_state()
@@ -106,6 +107,7 @@ class StateManager:
         state_view = self._build_state_view(runtime_state)
         state_view["goals"] = self._build_ui_goals_view(runtime_state.get("goals", {}))
         state_view["player_display_name"] = self._player_display_name(runtime_state.get("player_profile", ""))
+        state_view["player_profile"] = runtime_state.get("player_profile", "")
         state_view["stat_rules"] = state_view.get("config", {}).get("stat_rules", {})
         return state_view
 

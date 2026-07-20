@@ -1,0 +1,103 @@
+﻿:root {
+  --bg: #f3efe6;
+  --panel: #fffaf0;
+  --panel-strong: #f9f1de;
+  --ink: #1f1a16;
+  --muted: #6b6258;
+  --line: #d8ccba;
+  --accent: #b65c39;
+  --accent-soft: #eeb89c;
+  --success: #41644a;
+  --shadow: 0 18px 40px rgba(73, 52, 36, 0.12);
+  --radius: 20px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(238, 184, 156, 0.5), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(182, 92, 57, 0.18), transparent 28%),
+    var(--bg);
+}
+
+#app {
+  height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: none;
+  cursor: pointer;
+}
+
+.app-shell {
+  height: 100vh;
+  width: 100vw;
+  padding: 18px 24px 24px 8px;
+  overflow: hidden;
+}
+
+.app-frame {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  overflow: hidden;
+}
+
+.invite-shell {
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.invite-card {
+  width: min(460px, calc(100vw - 48px));
+  display: grid;
+  gap: 14px;
+  padding: 34px;
+  border: 1px solid rgba(216, 204, 186, 0.95);
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at top right, rgba(230, 151, 91, 0.18), transparent 34%),
+    rgba(255, 250, 240, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.invite-card h1 {
+  font-size: clamp(26px, 5vw, 38px);
+}
+
+.invite-card p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.invite-card input {
+  width: 100%;
+  border: 1px solid rgba(216, 204, 186, 0.95);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.invite-card small {
+  color: var(--accent);
+  font-weight: 800;
+}
+

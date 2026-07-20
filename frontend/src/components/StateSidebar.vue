@@ -1,7 +1,5 @@
 <script setup>
 import { computed, ref } from "vue";
-import MapGraph from "./MapGraph.vue";
-import { buildWorldStatePreview } from "../utils/format";
 
 const props = defineProps({
   state: {
@@ -15,6 +13,10 @@ const props = defineProps({
   selectedCharacterId: {
     type: String,
     default: null,
+  },
+  panel: {
+    type: String,
+    default: "all",
   },
 });
 
@@ -33,13 +35,11 @@ const mapLocations = computed(() => props.state?.world_state?.map_locations || {
 const statRules = computed(() => props.state?.stat_rules || props.state?.config?.stat_rules || {});
 const relationRules = computed(() => props.state?.relation_rules || props.state?.config?.relation_rules || {});
 const currentLocationInfo = computed(() => mapLocations.value?.[props.state?.user_state?.location] || null);
-const userStatePreview = computed(() => {
-  const fields = [locationName(props.state?.user_state?.location)];
-  for (const [key, value] of statEntries(props.state?.user_state?.stats).slice(0, 2)) {
-    fields.push(`${statLabel(key)} ${value?.value ?? value}`);
-  }
-  return fields.filter(Boolean).join(" · ");
-});
+const organizationEntries = computed(() => Object.entries(props.state?.world_state?.organizations || {}));
+const showPlayer = computed(() => props.panel === "all" || props.panel === "characters");
+const showCharacters = computed(() => props.panel === "all" || props.panel === "characters");
+const showWorld = computed(() => props.panel === "all" || props.panel === "world");
+const playerProfile = computed(() => props.state?.player_profile || props.state?.user_state?.player_profile || "");
 
 function statEntries(stats) {
   return Object.entries(stats || {});
@@ -49,7 +49,7 @@ function relationEntries(relations) {
   return Object.entries(relations || {});
 }
 
-function fieldEntries(value, excludedKeys = ["stats", "relations", "role"]) {
+function fieldEntries(value, excludedKeys = ["stats", "relations", "role", "player_profile"]) {
   return Object.entries(value || {})
     .filter(([, item]) => item !== undefined && item !== null && item !== "")
     .filter(([key]) => !excludedKeys.includes(key));
@@ -59,11 +59,54 @@ function statLabel(statKey) {
   return statRules.value?.[statKey]?.display_name || statKey;
 }
 
+function statRule(statKey) {
+  return statRules.value?.[statKey] || {};
+}
+
 function relationLabel(relationKey) {
   return (
     relationRules.value?.[relationKey]?.display_name ||
     (relationKey === "player" || relationKey === "user" ? "对玩家关系" : relationKey)
   );
+}
+
+function relationRule(relationKey) {
+  return relationRules.value?.[relationKey] || {};
+}
+
+function valueOf(item) {
+  return item && typeof item === "object" && "value" in item ? item.value : item;
+}
+
+function rangeFor(rule) {
+  const range = rule?.range;
+  return Array.isArray(range) && range.length === 2 ? range : [0, 100];
+}
+
+function percentFor(value, rule) {
+  const [min, max] = rangeFor(rule).map(Number);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || !Number.isFinite(min) || !Number.isFinite(max) || max === min) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, ((numeric - min) / (max - min)) * 100));
+}
+
+function rangeText(rule) {
+  const [min, max] = rangeFor(rule);
+  return `${min} - ${max}`;
+}
+
+function organizationIcon(type) {
+  const normalized = String(type || "").toLowerCase();
+  const icons = {
+    academy: "学",
+    company: "商",
+    family: "族",
+    guild: "会",
+    sect: "宗",
+  };
+  return icons[normalized] || "势";
 }
 
 function locationName(locationId) {
@@ -107,10 +150,9 @@ function closeDetail() {
 
 <template>
   <aside class="state-panel">
-    <section class="state-card clickable-state-card" @click="openDetail('player')">
+    <section v-if="showPlayer" class="state-card clickable-state-card" @click="openDetail('player')">
       <div class="card-header">
         <h3>玩家状态</h3>
-        <p>{{ userStatePreview }}</p>
       </div>
       <div class="meta-list">
         <div class="meta-row">
@@ -118,12 +160,22 @@ function closeDetail() {
           <span class="meta-value">{{ locationName(state.user_state?.location) }}</span>
         </div>
       </div>
+      <div v-if="statEntries(state.user_state?.stats).length" class="state-bar-list compact-state-bars">
+        <div v-for="[statKey, statValue] in statEntries(state.user_state?.stats)" :key="statKey" class="state-bar-row">
+          <div class="state-bar-meta">
+            <span>{{ statLabel(statKey) }}</span>
+            <span>{{ valueOf(statValue) }} / {{ rangeText(statRule(statKey)) }}</span>
+          </div>
+          <div class="state-bar-track">
+            <span class="state-bar-fill" :style="{ width: `${percentFor(valueOf(statValue), statRule(statKey))}%` }"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="state-card clickable-state-card" @click="openDetail('world')">
+    <section v-if="showWorld" class="state-card clickable-state-card" @click="openDetail('world')">
       <div class="card-header">
         <h3>世界信息</h3>
-        <p>{{ buildWorldStatePreview(state.world_state) }}</p>
       </div>
       <div class="meta-list">
         <div class="meta-row">
@@ -135,9 +187,20 @@ function closeDetail() {
           <span class="meta-value">{{ state.world_state?.weather || "未知" }}</span>
         </div>
       </div>
+      <div v-if="statEntries(state.world_state?.stats).length" class="state-bar-list compact-state-bars">
+        <div v-for="[statKey, statValue] in statEntries(state.world_state?.stats)" :key="statKey" class="state-bar-row">
+          <div class="state-bar-meta">
+            <span>{{ statLabel(statKey) }}</span>
+            <span>{{ valueOf(statValue) }} / {{ rangeText(statRule(statKey)) }}</span>
+          </div>
+          <div class="state-bar-track">
+            <span class="state-bar-fill" :style="{ width: `${percentFor(valueOf(statValue), statRule(statKey))}%` }"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="state-card">
+    <section v-if="showCharacters" class="state-card">
       <div class="card-header">
         <h3>角色</h3>
         <p>{{ characterEntries.length }} characters</p>
@@ -151,12 +214,46 @@ function closeDetail() {
           :class="{ active: selectedCharacterId === characterId }"
           @click="openCharacter(characterId)"
         >
+          <span class="character-avatar-placeholder">
+            {{ (characterState.state?.name || characterId).slice(0, 1) }}
+          </span>
           <span class="character-row-name">{{ characterState.state?.name || characterId }}</span>
         </button>
       </div>
     </section>
 
-    <div v-if="activeDetailType || selectedCharacter" class="detail-popover" @click="closeDetail">
+    <section v-if="panel === 'world'" class="state-card world-structure-card">
+      <div class="card-header">
+        <h3>地点</h3>
+      </div>
+      <div class="world-list">
+        <article v-for="[locationId, location] in Object.entries(mapLocations)" :key="locationId" class="world-list-item">
+          <strong>{{ location.name || locationId }}</strong>
+          <p>{{ location.description || "" }}</p>
+          <div v-if="location.connections" class="detail-text">连接：{{ location.connections }}</div>
+          <div v-if="location.notes" class="detail-text">提示：{{ location.notes }}</div>
+        </article>
+      </div>
+    </section>
+
+    <section v-if="panel === 'world' && organizationEntries.length" class="state-card world-structure-card">
+      <div class="card-header">
+        <h3>组织</h3>
+      </div>
+      <div class="world-list">
+        <article v-for="[organizationId, organization] in organizationEntries" :key="organizationId" class="world-list-item">
+          <strong>
+            {{ organization.name || organizationId }}
+            <span class="organization-type-icon" :title="organization.type || 'organization'">
+              {{ organizationIcon(organization.type) }}
+            </span>
+          </strong>
+          <p>{{ organization.description || "" }}</p>
+        </article>
+      </div>
+    </section>
+
+    <div v-if="activeDetailType || (showCharacters && selectedCharacter)" class="detail-popover" @click="closeDetail">
       <div class="popover-panel" @click.stop>
         <div class="card-header">
           <div>
@@ -170,35 +267,12 @@ function closeDetail() {
         </div>
 
         <div v-if="activeDetailType === 'player'" class="meta-list">
-          <div
-            v-for="[fieldKey, fieldValue] in fieldEntries(state.user_state)"
-            :key="fieldKey"
-            class="meta-row"
-          >
-            <span class="meta-label">{{ fieldKey === "location" ? "地点" : fieldKey }}</span>
-            <span class="meta-value">{{ formatFieldValue(fieldValue, fieldKey) }}</span>
+          <div v-if="playerProfile" class="subcard-block profile-block">
+            <div class="meta-label">玩家 Profile</div>
+            <div class="detail-text profile-text">{{ playerProfile }}</div>
           </div>
-          <div v-if="statEntries(state.user_state?.stats).length" class="subcard-block">
-            <div class="meta-label">状态</div>
-            <div class="delta-list">
-              <div v-for="[statKey, statValue] in statEntries(state.user_state?.stats)" :key="statKey" class="delta-row">
-                <span class="delta-label">{{ statLabel(statKey) }}</span>
-                <span class="delta-change">{{ statValue?.value ?? statValue }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-if="relationEntries(state.user_state?.relations).length" class="subcard-block">
-            <div class="meta-label">关系</div>
-            <div class="delta-list">
-              <div
-                v-for="[relationKey, relationValue] in relationEntries(state.user_state?.relations)"
-                :key="relationKey"
-                class="delta-row"
-              >
-                <span class="delta-label">{{ relationLabel(relationKey) }}</span>
-                <span class="delta-change">{{ relationValue?.value ?? relationValue }}</span>
-              </div>
-            </div>
+          <div v-else class="detail-text profile-text">
+            暂无玩家 Profile。
           </div>
         </div>
 
@@ -210,14 +284,6 @@ function closeDetail() {
           >
             <span class="meta-label">{{ fieldKey }}</span>
             <span class="meta-value">{{ formatFieldValue(fieldValue, fieldKey) }}</span>
-          </div>
-          <div v-if="Object.keys(mapLocations).length" class="subcard-block">
-            <div class="meta-label">地图网络</div>
-            <MapGraph
-              :map-locations="mapLocations"
-              :characters="state.characters"
-              :current-location="state.user_state?.location || ''"
-            />
           </div>
           <div v-if="currentLocationInfo" class="subcard-block">
             <div class="meta-label">当前位置</div>
@@ -242,24 +308,32 @@ function closeDetail() {
         </div>
 
         <div v-if="selectedCharacter && statEntries(selectedCharacter.state?.stats).length" class="subcard-block">
-          <div class="meta-label">状态</div>
-          <div class="delta-list">
-            <div v-for="[statKey, statValue] in statEntries(selectedCharacter.state?.stats)" :key="statKey" class="delta-row">
-              <span class="delta-label">{{ statLabel(statKey) }}</span>
-              <span class="delta-change">{{ statValue?.value ?? statValue }}</span>
+          <div class="state-bar-list">
+            <div v-for="[statKey, statValue] in statEntries(selectedCharacter.state?.stats)" :key="statKey" class="state-bar-row">
+              <div class="state-bar-meta">
+                <span>{{ statLabel(statKey) }}</span>
+                <span>{{ valueOf(statValue) }} / {{ rangeText(statRule(statKey)) }}</span>
+              </div>
+              <div class="state-bar-track">
+                <span class="state-bar-fill" :style="{ width: `${percentFor(valueOf(statValue), statRule(statKey))}%` }"></span>
+              </div>
             </div>
           </div>
         </div>
         <div v-if="selectedCharacter && relationEntries(selectedCharacter.state?.relations).length" class="subcard-block">
-          <div class="meta-label">关系</div>
-          <div class="delta-list">
+          <div class="state-bar-list">
             <div
               v-for="[relationKey, relationValue] in relationEntries(selectedCharacter.state?.relations)"
               :key="relationKey"
-              class="delta-row"
+              class="state-bar-row"
             >
-              <span class="delta-label">{{ relationLabel(relationKey) }}</span>
-              <span class="delta-change">{{ relationValue?.value ?? relationValue }}</span>
+              <div class="state-bar-meta">
+                <span>{{ relationLabel(relationKey) }}</span>
+                <span>{{ valueOf(relationValue) }} / {{ rangeText(relationRule(relationKey)) }}</span>
+              </div>
+              <div class="state-bar-track">
+                <span class="state-bar-fill relation-fill" :style="{ width: `${percentFor(valueOf(relationValue), relationRule(relationKey))}%` }"></span>
+              </div>
             </div>
           </div>
         </div>

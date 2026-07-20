@@ -21,12 +21,18 @@ from .user_layer import UserLayer
 class AppConfig:
     game_id: str
     games_dir: Path
+    users_dir: Path
+    user_id: str
     director: AgentLLMConfig
     character: AgentLLMConfig
+    access: dict[str, Any]
     debug: bool
 
     def with_game_id(self, game_id: str) -> "AppConfig":
         return replace(self, game_id=game_id)
+
+    def with_user_id(self, user_id: str) -> "AppConfig":
+        return replace(self, user_id=user_id)
 
     def with_llm_enabled(self, enabled: bool) -> "AppConfig":
         return replace(
@@ -49,8 +55,11 @@ def load_app_config(config_path: str | Path | None = None) -> AppConfig:
     return AppConfig(
         game_id=str(game_config.get("default_game_id") or "demo_game"),
         games_dir=_resolve_path(project_root, game_config.get("games_dir") or "games"),
+        users_dir=_resolve_path(project_root, game_config.get("users_dir") or "users"),
+        user_id="root",
         director=read_llm_config(_agent_llm_block(config, "director")),
         character=read_llm_config(_agent_llm_block(config, "character")),
+        access=config.get("access", {}) if isinstance(config.get("access"), dict) else {},
         debug=bool(config.get("debug", False)),
     )
 
@@ -677,7 +686,8 @@ def build_app(settings: AppConfig) -> GameApp:
     director_llm = _build_llm_client(settings.director)
     character_llm = _build_llm_client(settings.character)
     game_root = settings.games_dir / settings.game_id
-    state_manager = StateManager(game_root=game_root)
+    user_game_root = settings.users_dir / settings.user_id / settings.game_id
+    state_manager = StateManager(game_root=game_root, user_game_root=user_game_root)
     character_agent = CharacterAgent(
         llm_client=character_llm,
         thinking=settings.character.thinking,

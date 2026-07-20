@@ -1,7 +1,13 @@
 {
   "game": {
     "default_game_id": "demo_game",
-    "games_dir": "games"
+    "games_dir": "games",
+    "users_dir": "users"
+  },
+  "access": {
+    "enabled": false,
+    "invite_codes": ["root"],
+    "token_secret": "replace-with-a-random-secret"
   },
   "director": {
     "llm": {
