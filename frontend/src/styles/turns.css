@@ -19,6 +19,7 @@
 
 .message-list {
   min-height: 0;
+  height: 100%;
   flex: 1;
   overflow-y: auto;
   display: flex;

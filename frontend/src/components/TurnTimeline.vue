@@ -1,7 +1,8 @@
 <script setup>
+import { nextTick, ref, watch } from "vue";
 import TurnCard from "./TurnCard.vue";
 
-defineProps({
+const props = defineProps({
   turns: {
     type: Array,
     default: () => [],
@@ -25,10 +26,34 @@ defineProps({
 });
 
 defineEmits(["pick-option"]);
+
+const listRef = ref(null);
+
+function scrollToBottom() {
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      const element = listRef.value;
+      if (element) {
+        element.scrollTop = element.scrollHeight;
+      }
+    });
+  });
+}
+
+watch(
+  () => [
+    props.turns.length,
+    props.turns.at(-1)?.is_streaming,
+    props.turns.at(-1)?.stream?.visibleNarrative,
+    props.turns.at(-1)?.director_result?.narrative?.visible,
+  ],
+  scrollToBottom,
+  { immediate: true }
+);
 </script>
 
 <template>
-  <div class="message-list">
+  <div ref="listRef" class="message-list">
     <article v-if="!turns.length" class="turn-card opening-card">
       <div class="turn-header">
         <div>

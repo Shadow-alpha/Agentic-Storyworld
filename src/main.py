@@ -22,6 +22,8 @@ class AppConfig:
     game_id: str
     games_dir: Path
     users_dir: Path
+    host: str
+    port: int
     user_id: str
     director: AgentLLMConfig
     character: AgentLLMConfig
@@ -52,10 +54,13 @@ def load_app_config(config_path: str | Path | None = None) -> AppConfig:
 
     config = json.loads(path.read_text(encoding="utf-8"))
     game_config = config.get("game", {}) if isinstance(config.get("game"), dict) else {}
+    server_config = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
     return AppConfig(
         game_id=str(game_config.get("default_game_id") or "demo_game"),
         games_dir=_resolve_path(project_root, game_config.get("games_dir") or "games"),
         users_dir=_resolve_path(project_root, game_config.get("users_dir") or "users"),
+        host=str(server_config.get("host") or "127.0.0.1"),
+        port=int(server_config.get("port") or 8000),
         user_id="root",
         director=read_llm_config(_agent_llm_block(config, "director")),
         character=read_llm_config(_agent_llm_block(config, "character")),
@@ -626,6 +631,15 @@ class GameApp:
         )
         goal_update_result = self.state_manager.apply_goal_update(director_result.get("goal_update", {}))
         ending = self.state_manager.check_endings()
+        if ending and not ending.get("narrative"):
+            ending_text = self.director.ending(
+                ending=ending,
+                narrative_result=director_result,
+                state=self.state_manager.get_agent_state_view(),
+                logs=self.state_manager.get_logs(),
+                env_feedback=env_feedback,
+            ).get("narrative", "")
+            ending = self.state_manager.update_ending_narrative(ending_text) or ending
         director_result = dict(director_result)
         director_result["goal_update"] = {
             "checkpoints": goal_update_result.get("checkpoints", []),

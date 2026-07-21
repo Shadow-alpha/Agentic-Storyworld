@@ -308,8 +308,8 @@ app = create_app()
 def main() -> None:
     import uvicorn
     settings = load_app_config()
-    host = "127.0.0.1"
-    port = 8000
+    host = settings.host
+    port = settings.port
     print(f"App server running at http://{host}:{port} for game '{settings.game_id}'")
     uvicorn.run(
         "src.app_server:app",

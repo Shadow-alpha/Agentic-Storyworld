@@ -210,14 +210,14 @@
 }
 
 .goal-dropdown summary::after {
-  content: "灞曞紑";
+  content: "展开";
   color: var(--muted);
   font-size: 11px;
   letter-spacing: 0;
 }
 
 .goal-dropdown[open] summary::after {
-  content: "鏀惰捣";
+  content: "收起";
 }
 
 .goal-dropdown .goal-card-stack {

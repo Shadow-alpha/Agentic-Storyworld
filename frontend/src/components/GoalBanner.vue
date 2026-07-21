@@ -74,7 +74,10 @@ const latestStreamingCheckpoints = computed(() => {
 
       <article v-if="endingState.is_ended" class="goal-choice-card active-goal-card goal-card-stack">
         <strong>{{ endingState.title || "已达成结局" }}</strong>
-        <p>{{ endingState.description }}</p>
+        <p>{{ endingState.narrative || endingState.description }}</p>
+        <p v-if="endingState.narrative && endingState.description" class="goal-description">
+          {{ endingState.description }}
+        </p>
       </article>
 
       <details v-if="activeGoals.length && !endingState.is_ended" class="goal-dropdown" open>

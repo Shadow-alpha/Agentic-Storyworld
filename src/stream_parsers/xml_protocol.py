@@ -222,6 +222,16 @@ def parse_resolve_xml(text: str) -> dict[str, Any]:
     }
 
 
+def parse_ending_xml(text: str) -> dict[str, str]:
+    cleaned = _prepare_protocol_text(text)
+    blocks = parse_protocol_blocks(cleaned, {"ending_narrative": parse_text_block})
+    narrative = first_block_parsed(blocks, "ending_narrative", "") or _extract_unclosed_tag_text(
+        cleaned,
+        "ending_narrative",
+    )
+    return {"narrative": narrative.strip()}
+
+
 def parse_scene_block(xml_text: str) -> dict[str, str]:
     return {
         "id": _extract_attribute(xml_text, "scene", "id").strip(),

@@ -4,6 +4,10 @@
     "games_dir": "games",
     "users_dir": "users"
   },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
   "access": {
     "enabled": false,
     "invite_codes": ["root"],

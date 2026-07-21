@@ -50,6 +50,10 @@ Then edit `config.json`:
     "games_dir": "games",
     "users_dir": "users"
   },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
   "access": {
     "enabled": true,
     "invite_codes": ["root"],
@@ -172,7 +176,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 - If the page is blank after rebuilding, press `Ctrl + F5`.
 - If the page still uses an old invite token, clear `localStorage.access_token`.
 - If module scripts fail with MIME errors, restart `python -m src.app_server`; the backend explicitly registers `.js`, `.mjs`, and `.css` MIME types.
-- If another process is using port `8000`, stop it or change the server port in `src/app_server.py`.
+- If another process is using port `8000`, stop it or change `server.port` in `config.json`.
 
 ## Internal Test Deployment Notes
 

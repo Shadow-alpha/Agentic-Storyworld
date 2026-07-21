@@ -235,6 +235,22 @@ class StateManager:
                 return ending_state
         return {}
 
+    def update_ending_narrative(self, narrative: str) -> dict[str, Any]:
+        """Persist the generated ending narrative into goals.ending_state."""
+        runtime_state = self.get_runtime_state()
+        goals_config = runtime_state.setdefault("goals", {})
+        if not isinstance(goals_config, dict):
+            return {}
+        ending_state = goals_config.get("ending_state", {})
+        if not isinstance(ending_state, dict) or not ending_state.get("is_ended"):
+            return {}
+        cleaned = str(narrative or "").strip()
+        if not cleaned:
+            return ending_state
+        ending_state["narrative"] = cleaned
+        self._write_runtime_state()
+        return ending_state
+
     def apply_player_customization(self, values: dict[str, Any]) -> dict[str, Any]:
         """Persist opening player customization as a text profile."""
         if not isinstance(values, dict):

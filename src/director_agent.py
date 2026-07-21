@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
-from .prompts import Director_Narrative_Prompt, Director_Plan_Prompt, Director_Resolve_Prompt
+from .prompts import Director_Ending_Prompt, Director_Narrative_Prompt, Director_Plan_Prompt, Director_Resolve_Prompt
 from .schemas import INPUT_MODE_HYBRID
 from .stream_parsers.xml_protocol import (
     NarrativeStreamParser,
     PlanStreamParser,
     ResolveStreamParser,
+    parse_ending_xml,
     parse_narrative_xml,
     parse_plan_xml,
     parse_resolve_xml,
@@ -80,6 +81,28 @@ class DirectorAgent:
             except Exception:
                 pass
         return self._normalize_resolve(self._build_fallback_resolve(narrative_result))
+
+    def ending(
+        self,
+        ending: dict[str, Any],
+        narrative_result: dict[str, Any],
+        state: dict[str, Any],
+        logs: dict[str, Any],
+        env_feedback: dict[str, Any],
+    ) -> dict[str, str]:
+        state = self._resolve_state(state)
+        if self.llm_client:
+            try:
+                user_prompt = self._build_ending_prompt(ending, narrative_result, state, logs, env_feedback)
+                raw_text = self.llm_client.generate_text(
+                    system_prompt=Director_Ending_Prompt,
+                    user_prompt=user_prompt,
+                )
+                self._log_complete_output("director_ending", raw_text)
+                return self._normalize_ending(parse_ending_xml(raw_text), ending)
+            except Exception:
+                pass
+        return self._normalize_ending(self._build_fallback_ending(ending, narrative_result), ending)
 
     def stream_plan(
         self,
@@ -515,6 +538,33 @@ class DirectorAgent:
             "Return strict TAG format with state_update, goal_update, and interaction."
         )
 
+    def _build_ending_prompt(
+        self,
+        ending: dict[str, Any],
+        narrative_result: dict[str, Any],
+        state: dict[str, Any],
+        logs: dict[str, Any],
+        env_feedback: dict[str, Any],
+    ) -> str:
+        recent_summaries = self._recent_summaries(logs)
+        runtime_goals = self.state_manager.get_runtime_state().get("goals", {}) if self.state_manager else {}
+        completed_goals = runtime_goals.get("completed_goals", []) if isinstance(runtime_goals, dict) else []
+        return (
+            "Selected ending:\n"
+            f"{self._dump_prompt_json(ending)}\n\n"
+            "Final turn narrative:\n"
+            f"{self._narrative_text(narrative_result)}\n\n"
+            "Completed goals:\n"
+            f"{self._dump_prompt_json(completed_goals)}\n\n"
+            "Player and world state:\n"
+            f"{self._dump_prompt_json({'player': state.get('user_state', {}), 'world': state.get('world_state', {})})}\n\n"
+            "Character outcomes this turn:\n"
+            f"{self._dump_prompt_json(env_feedback.get('character_feedback', []))}\n\n"
+            "Recent turn summaries:\n"
+            f"{self._dump_prompt_json(recent_summaries)}\n\n"
+            "Return only <ending_narrative>."
+        )
+
     def _build_fallback_plan(self, user_input: str, state: dict[str, Any]) -> dict[str, Any]:
         characters = list(state.get("characters", {}).keys())
         raw_text = user_input or "继续"
@@ -570,6 +620,10 @@ class DirectorAgent:
                 "options": self._build_choices(visible),
             },
         }
+
+    def _build_fallback_ending(self, ending: dict[str, Any], narrative_result: dict[str, Any]) -> dict[str, str]:
+        ending_text = ending.get("description", "") or self._narrative_text(narrative_result)
+        return {"narrative": ending_text}
 
     def _build_choices(self, context: str = "") -> list[dict[str, str]]:
         return [
@@ -633,6 +687,12 @@ class DirectorAgent:
                 "options": interaction.get("options", []) if isinstance(interaction, dict) else [],
             },
         }
+
+    def _normalize_ending(self, result: dict[str, str], ending: dict[str, Any]) -> dict[str, str]:
+        narrative = str(result.get("narrative") or "").strip()
+        if not narrative:
+            narrative = str(ending.get("description") or "").strip()
+        return {"narrative": narrative}
 
     def _normalize_goal_update(self, goal_update: dict[str, Any]) -> dict[str, Any]:
         checkpoints = []
