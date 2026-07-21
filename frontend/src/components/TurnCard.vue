@@ -266,6 +266,9 @@ function normalizeDeltaPath(path) {
 function flattenDelta(delta, prefix = "") {
   const rows = [];
   Object.entries(delta || {}).forEach(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length) {
+      return;
+    }
     const rawPath = prefix ? `${prefix}.${key}` : key;
     const path = normalizeDeltaPath(rawPath);
     if (

@@ -690,6 +690,7 @@ onMounted(async () => {
               <StateSidebar
                 v-else
                 :panel="activePanel"
+                :game-id="appState.gameId"
                 :state="appState.state"
                 :selected-character-id="appState.selectedCharacterId"
                 @select-character="onSelectCharacter"

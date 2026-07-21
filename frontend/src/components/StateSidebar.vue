@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 
 const props = defineProps({
   state: {
@@ -18,10 +18,22 @@ const props = defineProps({
     type: String,
     default: "all",
   },
+  gameId: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["select-character"]);
 const activeDetailType = ref(null);
+const failedCharacterImages = ref({});
+
+watch(
+  () => props.gameId,
+  () => {
+    failedCharacterImages.value = {};
+  }
+);
 
 const characterEntries = computed(() => Object.entries(props.state?.characters || {}));
 const selectedCharacter = computed(() => {
@@ -146,6 +158,25 @@ function closeDetail() {
   activeDetailType.value = null;
   emit("select-character", null);
 }
+
+function characterImageUrl(characterId) {
+  if (!props.gameId || !characterId) {
+    return "";
+  }
+  const filename = `character_${characterId}.png`;
+  return `/api/game/image/${encodeURIComponent(filename)}?game_id=${encodeURIComponent(props.gameId)}`;
+}
+
+function hasCharacterImage(characterId) {
+  return !!characterImageUrl(characterId) && !failedCharacterImages.value[characterId];
+}
+
+function markCharacterImageFailed(characterId) {
+  failedCharacterImages.value = {
+    ...failedCharacterImages.value,
+    [characterId]: true,
+  };
+}
 </script>
 
 <template>
@@ -214,7 +245,15 @@ function closeDetail() {
           :class="{ active: selectedCharacterId === characterId }"
           @click="openCharacter(characterId)"
         >
-          <span class="character-avatar-placeholder">
+          <img
+            v-if="hasCharacterImage(characterId)"
+            class="character-avatar-image"
+            :src="characterImageUrl(characterId)"
+            :alt="characterState.state?.name || characterId"
+            loading="lazy"
+            @error="markCharacterImageFailed(characterId)"
+          />
+          <span v-else class="character-avatar-placeholder">
             {{ (characterState.state?.name || characterId).slice(0, 1) }}
           </span>
           <span class="character-row-name">{{ characterState.state?.name || characterId }}</span>

@@ -560,7 +560,10 @@ class GameApp:
                     "order": feedback.get("order", 1),
                     "response": feedback.get("response", ""),
                     "emotion": feedback.get("emotion", ""),
-                    "state_update": character_changes.get(character_id, {}),
+                    "state_update": self._display_state_changes(
+                        character_changes.get(character_id, {}),
+                        hidden_fields={"emotion", "location"},
+                    ),
                     "memory_append": feedback.get("memory_append", ""),
                 }
             )
@@ -582,13 +585,29 @@ class GameApp:
             "goal_resolution": director_result.get("goal_resolution", {}),
             "ending": director_result.get("ending", {}),
             "state_update": {
-                "world_state": state_changes.get("world_state", {}),
-                "user_state": state_changes.get("user_state", {}),
+                "world_state": self._display_state_changes(
+                    state_changes.get("world_state", {}),
+                    hidden_fields={"time"},
+                ),
+                "user_state": self._display_state_changes(
+                    state_changes.get("user_state", {}),
+                    hidden_fields={"location"},
+                ),
             },
             "interaction": {
                 "mode": INPUT_MODE_HYBRID,
                 "options": interaction.get("options", []) if isinstance(interaction, dict) else [],
             },
+        }
+
+    def _display_state_changes(self, changes: Any, hidden_fields: set[str]) -> dict[str, Any]:
+        """Keep state changes useful for turn-log display without affecting persisted state."""
+        if not isinstance(changes, dict):
+            return {}
+        return {
+            key: value
+            for key, value in changes.items()
+            if key.split(".", 1)[0] not in hidden_fields
         }
 
     def _finalize_turn(

@@ -86,6 +86,16 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
     async def favicon() -> FileResponse:
         return FileResponse(active_frontend_root / "favicon.svg", media_type="image/svg+xml")
 
+    @app.get("/api/game/image/{filename}")
+    async def get_game_image(filename: str, game_id: str | None = None) -> FileResponse:
+        safe_name = Path(filename).name
+        if not re.search(r"\.(png|jpg|jpeg|webp|gif|svg)$", safe_name, flags=re.IGNORECASE):
+            raise HTTPException(status_code=404, detail="Image not found.")
+        image_path = games_dir / (game_id or settings.game_id) / "images" / safe_name
+        if not image_path.is_file():
+            raise HTTPException(status_code=404, detail="Image not found.")
+        return FileResponse(image_path)
+
     def access_enabled() -> bool:
         return bool(settings.access.get("enabled", False))
 

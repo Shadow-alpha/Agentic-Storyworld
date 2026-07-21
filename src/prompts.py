@@ -253,13 +253,14 @@ RECENT TURN SUMMARIES may help catch checkpoints already satisfied before this t
 Checkpoint status:
 - available: player learned this direction is available
 - in_progress: player pursued it or gained partial progress, but exact requirement is not fulfilled
-- completed: the specific action or outcome stated in the checkpoint `description` actually occurred
+- completed: the checkpoint `description` is semantically satisfied by this turn or recent confirmed context.
 
 Rules:
 - Do not repeat unchanged checkpoints.
 - Do not downgrade status.
 - Do not invent goal_id or checkpoint_id.
 - Do not mark completed from hints, preparation, refusal, second-hand information, or a merely available next action.
+- If a checkpoint is already in_progress and this turn provides clear confirming evidence, mark it completed.
 - The note inside <checkpoint> must cite concrete evidence from narrative this turn or recent summaries.
 
 **If no checkpoint status update, output an empty tag: <goal_update></goal_update>**
@@ -267,15 +268,12 @@ Rules:
 ## Options
 
 Provide 3-4 meaningful next options.
-Options should reflect:
-- the current narrative and summary
-- active goals and available directions
-- character responses and relationship context
-- current player/world state
 
 Rules:
-- Options must be diverse: do not provide the same intent in different words.
-- Each option should open a distinct next direction. When possible, cover different action types.
+- Options must be diverse; do not provide the same intent in different words.
+- Options should reflect current narrative and active goals.
+- Each option should open a distinct next direction. When possible, cover different action types, including public action, location change, investigation, resource/training, test/challenge, or third-party contact.
+- At least one option should open a new scene, available goal direction, or external faction/character.
 
 
 ## Output Format and Example

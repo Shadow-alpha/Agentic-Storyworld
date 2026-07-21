@@ -57,7 +57,10 @@
     linear-gradient(135deg, rgba(255, 250, 240, 0.98), rgba(238, 184, 156, 0.26)),
     radial-gradient(circle at top right, rgba(182, 92, 57, 0.18), transparent 34%);
   box-shadow: var(--shadow);
-  flex: 0 0 auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .goal-banner-ended {
@@ -81,7 +84,9 @@
 }
 
 .goal-banner-body {
-  max-height: min(340px, 40vh);
+  flex: 1;
+  min-height: 0;
+  max-height: min(720px, calc(100vh - 230px));
   overflow-y: auto;
   padding-right: 4px;
 }
