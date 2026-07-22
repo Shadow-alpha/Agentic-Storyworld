@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import ControlStrip from "./components/ControlStrip.vue";
 import GoalBanner from "./components/GoalBanner.vue";
 import PlayerCustomizationForm from "./components/PlayerCustomizationForm.vue";
@@ -51,7 +51,6 @@ const panelTabs = [
   { id: "characters", label: "角色" },
   { id: "world", label: "世界格局" },
 ];
-const customizationTabs = [{ id: "player_profile", label: "玩家信息" }];
 
 const timelineTurns = computed(() => {
   const turns = [...appState.turns];
@@ -67,6 +66,15 @@ const hasCustomizationFields = computed(() => Object.keys(customizationFields.va
 const customizationStorageKey = computed(() => `player_customized:${appState.gameId || "unknown"}`);
 const needsPlayerCustomization = computed(() => {
   return hasCustomizationFields.value && !timelineTurns.value.length && !customizationCompleted.value;
+});
+const visiblePanelTabs = computed(() => {
+  if (!needsPlayerCustomization.value) {
+    return panelTabs;
+  }
+  return [
+    { id: "player_profile", label: "玩家信息" },
+    ...panelTabs.filter((tab) => tab.id !== "records"),
+  ];
 });
 
 const endingState = computed(() => appState.state?.goals?.ending_state || {});
@@ -583,6 +591,18 @@ function onSelectCharacter(characterId) {
   appState.selectedCharacterId = characterId;
 }
 
+watch(
+  needsPlayerCustomization,
+  (needsCustomization) => {
+    if (needsCustomization && activePanel.value === "records") {
+      activePanel.value = "player_profile";
+    } else if (!needsCustomization && activePanel.value === "player_profile") {
+      activePanel.value = "records";
+    }
+  },
+  { immediate: true },
+);
+
 onMounted(async () => {
   try {
     await initializeAccess();
@@ -635,69 +655,55 @@ onMounted(async () => {
 
       <section class="workspace-layout unified-workspace">
         <section class="content-panel">
-          <template v-if="needsPlayerCustomization">
-            <nav class="content-tabs opening-tabs" aria-label="开局信息">
-              <button
-                v-for="tab in customizationTabs"
-                :key="tab.id"
-                type="button"
-                class="content-tab-button active"
-              >
-                {{ tab.label }}
-              </button>
-            </nav>
-            <div class="content-body">
-              <PlayerCustomizationForm
-                :fields="customizationFields"
-                @submit="onSubmitPlayerCustomization"
-              />
-            </div>
-          </template>
+          <nav class="content-tabs" aria-label="内容切换">
+            <button
+              v-for="tab in visiblePanelTabs"
+              :key="tab.id"
+              type="button"
+              class="content-tab-button"
+              :class="{ active: activePanel === tab.id }"
+              @click="activePanel = tab.id"
+            >
+              {{ tab.label }}
+            </button>
+          </nav>
 
-          <template v-else>
-            <nav class="content-tabs" aria-label="内容切换">
-              <button
-                v-for="tab in panelTabs"
-                :key="tab.id"
-                type="button"
-                class="content-tab-button"
-                :class="{ active: activePanel === tab.id }"
-                @click="activePanel = tab.id"
-              >
-                {{ tab.label }}
-              </button>
-            </nav>
+          <div class="content-body">
+            <PlayerCustomizationForm
+              v-if="activePanel === 'player_profile' && needsPlayerCustomization"
+              :fields="customizationFields"
+              @submit="onSubmitPlayerCustomization"
+            />
 
-            <div class="content-body">
-              <TurnTimeline
-                v-if="activePanel === 'records'"
-                :turns="timelineTurns"
-                :opening-text="openingText"
-                :stat-rules="appState.state.stat_rules"
-                :state="appState.state"
-                :interactive="!inputDisabled"
-                @pick-option="onPickChoice"
-              />
+            <TurnTimeline
+              v-else-if="activePanel === 'records'"
+              :turns="timelineTurns"
+              :opening-text="openingText"
+              :stat-rules="appState.state.stat_rules"
+              :state="appState.state"
+              :interactive="!inputDisabled"
+              @pick-option="onPickChoice"
+            />
 
-              <GoalBanner
-                v-else-if="activePanel === 'goals'"
-                :goals-config="appState.state.goals"
-                :streaming-turn="appState.currentStreamingTurn"
-                @activate-goal="onActivateGoal"
-                @deactivate-goal="onDeactivateGoal"
-              />
+            <GoalBanner
+              v-else-if="activePanel === 'goals'"
+              :goals-config="appState.state.goals"
+              :streaming-turn="appState.currentStreamingTurn"
+              @activate-goal="onActivateGoal"
+              @deactivate-goal="onDeactivateGoal"
+            />
 
-              <StateSidebar
-                v-else
-                :panel="activePanel"
-                :game-id="appState.gameId"
-                :state="appState.state"
-                :selected-character-id="appState.selectedCharacterId"
-                @select-character="onSelectCharacter"
-              />
-            </div>
+            <StateSidebar
+              v-else
+              :panel="activePanel"
+              :game-id="appState.gameId"
+              :state="appState.state"
+              :selected-character-id="appState.selectedCharacterId"
+              @select-character="onSelectCharacter"
+            />
+          </div>
 
-            <form class="input-dock chat-form" @submit.prevent="onSubmitChat">
+          <form v-if="!needsPlayerCustomization" class="input-dock chat-form" @submit.prevent="onSubmitChat">
             <textarea
               id="chat-input"
               v-model="chatInput"
@@ -711,8 +717,7 @@ onMounted(async () => {
                 {{ isGameEnded ? "已达成结局" : needsGoalChoice ? "请先选择目标" : isSending ? "生成中..." : "发送" }}
               </button>
             </div>
-            </form>
-          </template>
+          </form>
         </section>
       </section>
     </main>
