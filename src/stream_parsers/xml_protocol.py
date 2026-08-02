@@ -94,6 +94,12 @@ def first_block_parsed(blocks: dict[str, Any], name: str, default: Any = None) -
 def parse_plan_xml(text: str) -> dict[str, Any]:
     characters = []
     cleaned = _prepare_protocol_text(text)
+    player_input_block = _extract_complete_block(cleaned, "player_input") or ""
+    player_input = {
+        "intent": _extract_tag_inner_text(player_input_block, "intent"),
+        "action": _extract_tag_inner_text(player_input_block, "action"),
+        "speech": _extract_tag_inner_text(player_input_block, "speech"),
+    }
     for block in _extract_plan_character_blocks(cleaned):
         character = parse_plan_character_block(block)
         character_id = character.get("id", "")
@@ -101,7 +107,7 @@ def parse_plan_xml(text: str) -> dict[str, Any]:
             continue
         characters.append(character)
     return {
-        "user_intent": _extract_tag_inner_text(cleaned, "user_intent"),
+        "player_input": player_input,
         "context": _extract_tag_inner_text(cleaned, "context"),
         "characters": characters,
         "director_meta": {},
@@ -130,20 +136,13 @@ def parse_plan_character_block(xml_text: str) -> dict[str, Any]:
 
 def parse_character_xml(text: str, character_id: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
-    blocks = parse_protocol_blocks(
-        cleaned,
-        {
-            "response": parse_text_block,
-            "emotion": parse_text_block,
-            "state_update": parse_character_state_update_block,
-            "memory_append": parse_memory_append_block,
-        },
-    )
+    blocks = parse_protocol_blocks(cleaned, block_parsers("character"))
     memory = first_block_parsed(blocks, "memory_append", {}) or {}
     return {
         "character_id": character_id,
         "response": first_block_parsed(blocks, "response", "") or _extract_unclosed_tag_text(cleaned, "response"),
         "emotion": first_block_parsed(blocks, "emotion", "") or "",
+        "location": first_block_parsed(blocks, "location", {}) or {},
         "state_update": first_block_parsed(blocks, "state_update", {}) or {},
         "memory_append": memory.get("text", "") if isinstance(memory, dict) else "",
     }
@@ -151,17 +150,7 @@ def parse_character_xml(text: str, character_id: str) -> dict[str, Any]:
 
 def parse_integrate_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
-    blocks = parse_protocol_blocks(
-        cleaned,
-        {
-            "narrative": parse_narrative_block,
-            "summary": parse_text_block,
-            "goal": parse_goal_block,
-            "goal_update": parse_goal_update_block,
-            "state_update": parse_state_update_block,
-            "interaction": parse_interaction_block,
-        },
-    )
+    blocks = parse_protocol_blocks(cleaned, block_parsers("integrate"))
     narrative = first_block_parsed(blocks, "narrative", {"visible": "", "hidden": ""})
     summary = first_block_parsed(blocks, "summary", "") or ""
     goal = first_block_parsed(blocks, "goal", {}) or {}
@@ -185,36 +174,19 @@ def parse_integrate_xml(text: str) -> dict[str, Any]:
 
 def parse_narrative_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
-    blocks = parse_protocol_blocks(
-        cleaned,
-        {
-            "time": parse_text_block,
-            "scene": parse_scene_block,
-            "narrative": parse_narrative_block,
-            "summary": parse_text_block,
-            "movement": parse_movement_block,
-        },
-    )
+    blocks = parse_protocol_blocks(cleaned, block_parsers("narrative"))
     return {
         "time": first_block_parsed(blocks, "time", "") or "",
         "scene": first_block_parsed(blocks, "scene", "") or "",
         "narrative": first_block_parsed(blocks, "narrative", {"visible": "", "hidden": ""})
         or {"visible": "", "hidden": ""},
         "summary": first_block_parsed(blocks, "summary", "") or "",
-        "movement": first_block_parsed(blocks, "movement", []) or [],
     }
 
 
 def parse_resolve_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
-    blocks = parse_protocol_blocks(
-        cleaned,
-        {
-            "state_update": parse_state_update_block,
-            "goal_update": parse_goal_update_block,
-            "interaction": parse_interaction_block,
-        },
-    )
+    blocks = parse_protocol_blocks(cleaned, block_parsers("resolve"))
     return {
         "state_update": first_block_parsed(blocks, "state_update", {"world_state": {}, "user_state": {}}),
         "goal_update": first_block_parsed(blocks, "goal_update", {"checkpoints": []}) or {"checkpoints": []},
@@ -224,7 +196,7 @@ def parse_resolve_xml(text: str) -> dict[str, Any]:
 
 def parse_ending_xml(text: str) -> dict[str, str]:
     cleaned = _prepare_protocol_text(text)
-    blocks = parse_protocol_blocks(cleaned, {"ending_narrative": parse_text_block})
+    blocks = parse_protocol_blocks(cleaned, block_parsers("ending"))
     narrative = first_block_parsed(blocks, "ending_narrative", "") or _extract_unclosed_tag_text(
         cleaned,
         "ending_narrative",
@@ -247,21 +219,16 @@ def parse_narrative_block(xml_text: str) -> dict[str, Any]:
     }
 
 
-def parse_movement_block(xml_text: str) -> list[dict[str, str]]:
-    movements = []
-    for block in _extract_all_complete_blocks(xml_text, "character"):
-        character_id = _extract_attribute(block, "character", "id").strip()
-        location = _extract_attribute(block, "character", "location").strip()
-        if not character_id or not location:
-            continue
-        movements.append(
-            {
-                "character_id": character_id,
-                "location": location,
-                "reason": _extract_tag_inner_text(block, "character"),
-            }
-        )
-    return movements
+def parse_location_block(xml_text: str) -> dict[str, str]:
+    location = _extract_attribute(xml_text, "location", "id").strip()
+    if not location:
+        location = _extract_tag_inner_text(xml_text, "location").strip()
+    if not location:
+        return {}
+    return {
+        "value": location,
+        "reason": _extract_tag_inner_text(xml_text, "location"),
+    }
 
 
 def parse_goal_block(xml_text: str) -> dict[str, Any]:
@@ -395,6 +362,42 @@ def parse_memory_append_block(xml_text: str) -> dict[str, str]:
     return {
         "text": _extract_tag_inner_text(xml_text, "memory_append"),
     }
+
+
+def block_parsers(stage: str) -> dict[str, Any]:
+    """Return the parser registry for one LLM output stage."""
+    common_character = {
+        "response": parse_text_block,
+        "emotion": parse_text_block,
+        "location": parse_location_block,
+        "state_update": parse_character_state_update_block,
+        "memory_append": parse_memory_append_block,
+    }
+    registries = {
+        "character": common_character,
+        "character_reflection": common_character,
+        "integrate": {
+            "narrative": parse_narrative_block,
+            "summary": parse_text_block,
+            "goal": parse_goal_block,
+            "goal_update": parse_goal_update_block,
+            "state_update": parse_state_update_block,
+            "interaction": parse_interaction_block,
+        },
+        "narrative": {
+            "time": parse_text_block,
+            "scene": parse_scene_block,
+            "narrative": parse_narrative_block,
+            "summary": parse_text_block,
+        },
+        "resolve": {
+            "state_update": parse_state_update_block,
+            "goal_update": parse_goal_update_block,
+            "interaction": parse_interaction_block,
+        },
+        "ending": {"ending_narrative": parse_text_block},
+    }
+    return dict(registries.get(stage, {}))
 
 
 def _parse_protocol_block(raw_block: str, parsers: dict[str, Any]) -> dict[str, Any]:
@@ -606,14 +609,7 @@ class CharacterStreamParser:
         self.raw_text = ""
         self.thinking_enabled = thinking
         self.thinking = _TextTagTracker(["think", "thinking"], "thinking_started", "thinking_delta", "thinking_done")
-        self.blocks = ProtocolBlockStreamParser(
-            {
-                "response": parse_text_block,
-                "emotion": parse_text_block,
-                "state_update": parse_character_state_update_block,
-                "memory_append": parse_memory_append_block,
-            }
-        )
+        self.blocks = ProtocolBlockStreamParser(block_parsers("character"))
 
     def feed(self, delta: str) -> list[dict[str, Any]]:
         self.raw_text += delta
@@ -639,16 +635,7 @@ class IntegrateStreamParser:
         self.raw_text = ""
         self.thinking_enabled = thinking
         self.thinking = _TextTagTracker(["think", "thinking"], "thinking_started", "thinking_delta", "thinking_done")
-        self.blocks = ProtocolBlockStreamParser(
-            {
-                "narrative": parse_narrative_block,
-                "summary": parse_text_block,
-                "goal": parse_goal_block,
-                "goal_update": parse_goal_update_block,
-                "state_update": parse_state_update_block,
-                "interaction": parse_interaction_block,
-            }
-        )
+        self.blocks = ProtocolBlockStreamParser(block_parsers("integrate"))
 
     def feed(self, delta: str) -> list[dict[str, Any]]:
         self.raw_text += delta
@@ -678,15 +665,7 @@ class NarrativeStreamParser:
         self.raw_text = ""
         self.thinking_enabled = thinking
         self.thinking = _TextTagTracker(["think", "thinking"], "thinking_started", "thinking_delta", "thinking_done")
-        self.blocks = ProtocolBlockStreamParser(
-            {
-                "time": parse_text_block,
-                "scene": parse_scene_block,
-                "narrative": parse_narrative_block,
-                "summary": parse_text_block,
-                "movement": parse_movement_block,
-            }
-        )
+        self.blocks = ProtocolBlockStreamParser(block_parsers("narrative"))
 
     def feed(self, delta: str) -> list[dict[str, Any]]:
         self.raw_text += delta
@@ -716,13 +695,7 @@ class ResolveStreamParser:
         self.raw_text = ""
         self.thinking_enabled = thinking
         self.thinking = _TextTagTracker(["think", "thinking"], "thinking_started", "thinking_delta", "thinking_done")
-        self.blocks = ProtocolBlockStreamParser(
-            {
-                "state_update": parse_state_update_block,
-                "goal_update": parse_goal_update_block,
-                "interaction": parse_interaction_block,
-            }
-        )
+        self.blocks = ProtocolBlockStreamParser(block_parsers("resolve"))
 
     def feed(self, delta: str) -> list[dict[str, Any]]:
         self.raw_text += delta

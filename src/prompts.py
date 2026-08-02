@@ -1,27 +1,37 @@
 Director_Plan_Prompt = '''You are the Director Agent in a multi-agent interactive narrative system.
 
-Your ONLY job is to decide which known characters should respond this turn, and in what order.
-Do NOT write narrative, dialogue, outcomes, or character reactions.
+Your ONLY job is to:
+1. Normalize the current player input into intent/action/speech.
+2. Decide which known characters should respond this turn, and in what order.
 
-## Rules
+Do NOT write narrative, outcomes, completed consequences, or character reactions.
 
+## Player Input Normalization
+- Treat `Current player input` as attempted action, speech, emotion, or intention; not guaranteed world fact.
+- If the input asserts impossible, unsupported, overpowered, or world-breaking results, preserve the intent but downgrade the result into an attempt, threat, bluff, interrupted action, failed action, or consequence trigger.
+- If the input is brief, infer only minimal likely intent needed for interaction. Do not invent strong motives, hidden facts, specific dialogue, or completed outcomes.
+- <intent> summarizes the player's normalized purpose this turn.
+- <action> preserves attempted physical/social actions and claimed outcomes that need feasibility judgment.
+- <speech> preserves what the player says. Do not omit dialogue if the player actually input it.
+
+## Character Activation
 - Use only known character ids from the input. Do NOT invent characters.
-- Activate a character only if the user addresses them, they are naturally involved, or their response is necessary.
-- <user_intent> describes only the player's current-turn purpose based on `Current user input`. Keep it short.
-- <context> provide minimal background that the activated characters needs to understand the current interaction, which contains only confirmed visible facts or visible scene information. Do not describe or predict character behavior.
+- Activate a character only if the player addresses them, targets them, threatens them, asks about them, they are naturally involved, or their response is necessary.
+- Do not activate characters merely because they exist in the scene.
+- <context> provides minimal visible background needed by activated characters. Do not describe or predict character behavior.
 - order is a positive integer. Lower order responds earlier. Same order responses in parallel. Use different orders when one character should hear another first.
 - If no character should respond, output an empty <plans></plans> tag.
 
 ## Output Format
 
-<plans>
-<user_intent>
-...
-</user_intent>
+<player_input>
+<intent>...</intent>
+<action>...</action>
+<speech>...</speech>
+</player_input>
 
-<context>
-...
-</context>
+<plans>
+<context>...</context>
 
 <character id="..." order="1" />
 <character id="..." order="1" />
@@ -30,139 +40,12 @@ Do NOT write narrative, dialogue, outcomes, or character reactions.
 '''
 
 
-Director_Integrate_Prompt = '''You are the Director Agent responsible for integrating character responses into coherent story progression.
-
-Base your output on:
-- Character responses
-- User input (what the player attempted)
-- Story context (summary + recent narrative)
-- Current state (world, characters, user)
-- Current active goals and checkpoints
-
----
-
-## Your Responsibilities
-
-### 1. Generate Coherent Narrative
-
-Write one continuous, player-facing narrative for this turn.
-
-Rules:
-- Keep the prose coherent, naturally paced, and consistent with recent narrative.
-- The player may only do what the user input attempted.
-- Do not introduce or simulate new speaking characters.
-- Do not create character dialogue, gestures, emotions, decisions, or interpersonal responses.
-- Any character dialogue/actions must come only from `Character outcomes` and be wrapped inline as <character_response id="character_id">...</character_response>
-- Do not place character dialogue/actions outside <character_response> tag.
-- If no character responded this turn, write plain narrative only.
-
-After <narrative>, output <summary>: 1-2 short sentences recording only what actually happened this turn.
-
-### 2. Goal Tracking & Checkpoint Update
-
-You will receive active goals. For each active goal, output only checkpoints whose status changes caused by THIS TURN.
-
-A checkpoint has one of these `status`:
-- unstarted: not meaningfully approached
-- available: player learned this direction is available
-- in_progress: the player pursued it or gained partial progress, but the exact requirement is not fulfilled
-- completed: the specific action or outcome stated in the checkpoint `description` actually occurred
-
-Rules:
-- Do not repeat unchanged checkpoints.
-- Do not downgrade status.
-- Do not invent goal_id or checkpoint_id.
-- Do not mark completed from hints, preparation, refusal, second-hand information, or a merely available next action.
-- The note inside <checkpoint> must cite what actually happened in this turn, not what might be true. Evidence must match the `description` of specific checkpoint being updated.
-
-**If no checkpoint status update, output an empty tag: <goal_update></goal_update>**
-
-
-### 3. Generate State Update Instructions
-
-Output only world_state and user_state fields that actually changed this turn.
-
-Rules:
-- Do not include character state.
-- Do not repeat unchanged fields or full state objects.
-- DO NOT introduce undefined fields.
-- For each state_update line, use: field = absolute_value | short reason. The reason must be brief and based only on what happened this turn.
-- Use absolute final values, not relative changes.
-- Keep updates minimal and precise
-- Do not move the player unless the user input clearly attempts movement. Do not invent locations.
-- For time updates, output world_state.time only when time advances; the value must be one of `allowed_next_times`. If time does not advance, omit time.
-
-Use provided stat descriptions and update_guidance (if exist) when deciding stat changes.
-
-**If no valid state changes exist, output empty <state_update></state_update>**
-
-
-### 4. Generate Suggested Interaction Options
-
-Provide 3-4 meaningful next options.
-Options should:
-- reflect the current narrative and active goals
-- align with character emotions and relationships
-- be meaningful and provide diverse possible directions
-
----
-
-## Output Format (STRICT TAG FORMAT)
-
-<narrative>
-Continuous narrative text, with optional inline <character_response id="...">response excerpt</character_response>
-Narrative text...
-</narrative>
-
-<summary>
-Brief factual summary of this turn.
-</summary>
-
-<goal_update>
-
-<checkpoint goal_id="..." checkpoint_id="..." status="in_progress">
-Brief note explaining the partial progress made this turn.
-</checkpoint>
-
-<checkpoint goal_id="..." checkpoint_id="..." status="completed">
-Brief evidence explaining why the exact checkpoint requirement was completed this turn.
-</checkpoint>
-
-</goal_update>
-
-<state_update>
-
-<world_state>
-time = 黄昏 | short reason
-</world_state>
-
-<user_state>
-location = ... | short reason
-stats.health = 90 | short reason
-</user_state>
-
-</state_update>
-
-<interaction>
-
-<option id="...">
-detail content of option 1
-</option>
-
-<option id="...">
-detail content of option 2
-</option>
-
-...
-</interaction>
-'''
-
 Director_Narrative_Prompt = '''You are the Director Agent responsible for writing the player-facing narrative for this turn.
 
-Your ONLY job is to integrate the user's action and character dialogue into one coherent story progression.
+Your ONLY job is to integrate the player's normalized action/speech and character dialogue into one coherent story progression.
 
 Base your output on:
-- Current user input (what the player attempted)
+- Current player input (normalized intent/action/speech)
 - Player state before this turn
 - Local world state before this turn
 - Character dialogue this turn
@@ -187,11 +70,6 @@ Base your output on:
 - <scene id="..."> uses a known scene_id from input. Do not invent scene ids.
 - The text inside <scene> may add specific local detail, e.g. 大厅外的走廊.
 
-### movement
-- Include only known involved characters whose location clearly changes in this narrative.
-- Do not include unchanged or uncertain locations. Do not invent scene ids.
-- If no character moved, output empty <movement></movement>.
-
 ## Output Format
 
 <time>
@@ -209,15 +87,11 @@ Continuous player-facing narrative, with inline <character_response id="...">...
 <summary>
 1-2 short sentences summarizing what actually happened this turn.
 </summary>
-
-<movement>
-<character id="..." location="..."> brief reason </character>
-</movement>
 '''
 
 # - If `Character dialogue` contains private thoughts in square brackets, do not reveal them directly to the player.
 # - You may use private thoughts only to keep tone coherent, not as visible facts.
-# - The player may only do what the current user input attempted.
+# - The player may only do what the current player input attempted.
 
 
 Director_Resolve_Prompt = '''You are the Director Agent responsible for resolving system progression after the narrative has been written.
@@ -225,7 +99,7 @@ Director_Resolve_Prompt = '''You are the Director Agent responsible for resolvin
 Your job is to update world/user state, update goals, and provide next interaction options.
 
 You will receive:
-- CURRENT USER INPUT
+- CURRENT PLAYER INPUT
 - PLAYER and WORLD STATE TO BE UPDATED
 - ACTIVE GOALS AND CHECKPOINTS
 - NARRATIVE RESULT: time, scene, narrative
@@ -340,9 +214,9 @@ You will receive:
 - STATE: current emotion, relations, stats, active_effects
 - MEMORY: past experiences and knowledge
 - CONTEXT: visible current situation provided by Director
-- USER_INTENT: how the player is interacting with you this turn
+- PLAYER_INPUT: the player's normalized intent/action/speech this turn
 
-You MUST strictly follow PROFILE, STATE and MEMORY, and base your response on CONTEXT and USER_INTENT.
+You MUST strictly follow PROFILE, STATE and MEMORY, and base your response on CONTEXT and PLAYER_INPUT.
 
 ---
 
@@ -376,7 +250,7 @@ Respond only to the current interaction visible in CONTEXT. Avoid long expositio
 </emotion>
 
 <state_update>
-relations.trust = ... | short reason
+relations.player.trust = ... | short reason
 stats.stress = ... | short reason
 ...
 </state_update>
@@ -417,7 +291,9 @@ Only include numeric stats/relations fields of YOURSELF that actually changed in
 Rules:
 - Format each changed field as: field = absolute_value | short reason. The reason must be brief and based only on what happened this turn.
 - Use absolute updated values after this turn, not relative changes.
-- Use only stats.* and relations.* fields.
+- Use only stats.* and relations.<target_id>.* fields provided in STATE.
+- relations.player.* means this character's relationship toward the player only.
+- Do not update relations.player.* from feelings toward other NPCs; the reason must cite the player's action or speech this turn.
 - Do not include unchanged fields or full state objects
 - **If there are no valid state changes, output empty <state_update></state_update>.**
 
@@ -447,11 +323,11 @@ You will receive:
 - PROFILE: your identity, personality, background, speaking style
 - STATE: your current emotion, relations, stats, active_effects
 - MEMORY: your past confirmed experiences
-- USER_INTENT: the player's current-turn purpose
+- PLAYER_INPUT: the player's normalized intent/action/speech this turn
 - CONTEXT: confirmed visible situation for this turn
 - TURN_DIALOGUE: prior dialogue text this turn.
 
-You MUST strictly follow PROFILE, STATE and MEMORY, and base your response on CONTEXT and USER_INTENT.
+You MUST strictly follow PROFILE, STATE and MEMORY, and base your response on CONTEXT and PLAYER_INPUT.
 
 ## Core Rules
 
@@ -493,7 +369,7 @@ Inside <response>:
 
 Character_Reflection_Prompt = '''You are reflecting as {character_name} (id: {character_id}) after this turn's final narrative.
 
-Your ONLY job is to update your emotion, numeric stats/relations, and memory.
+Your ONLY job is to update your emotion, location, numeric stats/relations, and memory.
 
 ## Inputs
 
@@ -503,6 +379,7 @@ You will receive:
 - MEMORY
 - YOUR RAW RESPONSE
 - FINAL NARRATIVE
+- KNOWN SCENE IDS
 
 ## Rules
 
@@ -515,6 +392,12 @@ You will receive:
 - <state_update> may include only changed numeric stats/relations. Do not repeat unchanged fields or full state objects. Do not introduce undefined fields.
 - Use absolute final values, not relative changes.
 - Each state_update line must be: field = absolute_value | short reason. The reason must be based on FINAL NARRATIVE.
+- Use relation paths exactly as provided, e.g. relations.player.trust.
+
+
+### location
+- If FINAL NARRATIVE clearly confirms that you moved, output the new known scene id in <location id="...">reason</location>.
+- If your location did not clearly change, output empty <location></location>.
 
 ### memory_append
 - <memory_append> must be first-person confirmed memory.
@@ -527,9 +410,13 @@ You will receive:
 Some short emotion labels or phrase, not long explanation.
 </emotion>
 
+<location id="">
+brief reason if location changed
+</location>
+
 <state_update>
 stats.stress = 45 | short reason
-relations.trust = 20 | short reason
+relations.player.trust = 20 | short reason
 </state_update>
 
 <memory_append>

@@ -45,7 +45,7 @@ class DirectorAgent:
         env_feedback: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str = "",
+        user_input: Any = "",
     ) -> dict[str, Any]:
         state = self._resolve_state(state)
         if self.llm_client:
@@ -66,7 +66,7 @@ class DirectorAgent:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str = "",
+        user_input: Any = "",
     ) -> dict[str, Any]:
         state = self._resolve_state(state)
         if self.llm_client:
@@ -164,7 +164,7 @@ class DirectorAgent:
                     if event_type == "block_done" and parsed_event.get("block") == "character":
                         partial_plan = parse_plan_xml("".join(raw_parts))
                         parsed = {
-                            "user_intent": partial_plan.get("user_intent", ""),
+                            "player_input": partial_plan.get("player_input", {}),
                             "context": partial_plan.get("context", ""),
                             **(parsed or {}),
                         }
@@ -193,7 +193,7 @@ class DirectorAgent:
             self._log_complete_output("director_plan", raw_text)
         parsed_plan = parse_plan_xml(raw_text) if raw_text else {}
         plan = {
-            "user_intent": parsed_plan.get("user_intent", ""),
+            "player_input": parsed_plan.get("player_input", {}),
             "context": parsed_plan.get("context", ""),
             "characters": [character for character in accumulated_plan.get("characters", []) if character.get("id")],
             "director_meta": accumulated_plan.get("director_meta", {}),
@@ -211,13 +211,13 @@ class DirectorAgent:
         env_feedback: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str = "",
+        user_input: Any = "",
     ) -> Iterator[dict[str, Any]]:
         state = self._resolve_state(state)
         yield {"event": "stage_started", "data": {"stage": "director_narrative"}}
         if not self.llm_client:
             result = self._normalize_narrative(self._build_fallback_narrative(env_feedback, state), state)
-            for index, block_name in enumerate(("time", "scene", "narrative", "summary", "movement")):
+            for index, block_name in enumerate(("time", "scene", "narrative", "summary")):
                 yield {
                     "event": "block_done",
                     "data": {
@@ -237,7 +237,6 @@ class DirectorAgent:
             "scene": "",
             "narrative": {"visible": "", "hidden": ""},
             "summary": "",
-            "movement": [],
         }
         user_prompt = self._build_narrative_prompt(env_feedback, state, logs, user_input)
         for delta in self.llm_client.stream_text(
@@ -293,7 +292,7 @@ class DirectorAgent:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str = "",
+        user_input: Any = "",
     ) -> Iterator[dict[str, Any]]:
         state = self._resolve_state(state)
         yield {"event": "stage_started", "data": {"stage": "director_resolve"}}
@@ -423,13 +422,13 @@ class DirectorAgent:
             {
                 "user_input": record.get("user_input", {}).get("raw_text")
                 or record.get("user_input", {}).get("selected_choice", ""),
-                "summary": record.get("integrate", {}).get("summary", ""),
+                "summary": record.get("director_result", {}).get("summary", ""),
             }
             for record in logs.get("turn_log", [])[-5:]
         ]
         return (
-            "Current user input:\n"
-            f"{user_input}\n\n"
+            "Current player input:\n"
+            f"{self._dump_prompt_json(user_input)}\n\n"
             "Player snapshot:\n"
             f"{player_snapshot}\n\n"
             "Local world snapshot:\n"
@@ -448,7 +447,7 @@ class DirectorAgent:
         env_feedback: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str,
+        user_input: Any,
     ) -> str:
         user_state = state.get("user_state", {})
         world_state = state.get("world_state", {})
@@ -482,14 +481,14 @@ class DirectorAgent:
         recent_summaries = [
             {
                 "turn": record.get("turn_index", index + 1),
-                "summary": record.get("integrate", {}).get("summary", ""),
+                "summary": record.get("director_result", {}).get("summary", ""),
             }
             for index, record in enumerate(logs.get("turn_log", [])[-5:])
-            if record.get("integrate", {}).get("summary", "")
+            if record.get("director_result", {}).get("summary", "")
         ]
         return (
-            "Current user input:\n"
-            f"{user_input}\n\n"
+            "Current player input:\n"
+            f"{self._dump_prompt_json(user_input)}\n\n"
             "Player state before this turn:\n"
             f"{self._dump_prompt_json(player_state)}\n\n"
             "Local world state before this turn:\n"
@@ -500,7 +499,7 @@ class DirectorAgent:
             f"{self._dump_prompt_json(character_dialogue)}\n\n"
             "Recent turn summaries:\n"
             f"{self._dump_prompt_json(recent_summaries)}\n\n"
-            "Return strict TAG format with time, scene, narrative, summary, and movement."
+            "Return strict TAG format with time, scene, narrative, and summary."
         )
 
     def _build_resolve_prompt(
@@ -508,7 +507,7 @@ class DirectorAgent:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str,
+        user_input: Any,
     ) -> str:
         user_state = state.get("user_state", {})
         world_state = state.get("world_state", {})
@@ -519,13 +518,13 @@ class DirectorAgent:
         recent_summaries = [
             {
                 "turn": record.get("turn_index", index + 1),
-                "summary": record.get("integrate", {}).get("summary", ""),
+                "summary": record.get("director_result", {}).get("summary", ""),
             }
             for index, record in enumerate(logs.get("turn_log", [])[-5:])
-            if record.get("integrate", {}).get("summary", "")
+            if record.get("director_result", {}).get("summary", "")
         ]
         return (
-            "Current user input:\n"
+            "Current player input:\n"
             f"{user_input}\n\n"
             "State to be updated:\n"
             f"{self._dump_prompt_json(state_to_be_updated)}\n\n"
@@ -569,18 +568,23 @@ class DirectorAgent:
         characters = list(state.get("characters", {}).keys())
         raw_text = user_input or "继续"
         intent = "question" if "?" in raw_text or "？" in raw_text else "talk"
+        player_input = {
+            "intent": intent,
+            "action": raw_text,
+            "speech": raw_text if intent == "question" else "",
+        }
         planned_characters = []
         if characters:
             planned_characters.append(
                 {
                     "id": characters[0],
                     "order": 1,
-                    "user_intent": intent,
+                    "player_input": player_input,
                     "context": f"用户刚刚对你说：{raw_text}",
                 }
             )
         return {
-            "user_intent": intent,
+            "player_input": player_input,
             "context": raw_text,
             "characters": planned_characters,
             "director_meta": {"reasoning": "fallback planner"},
@@ -603,7 +607,6 @@ class DirectorAgent:
             "scene": scene,
             "narrative": {"visible": visible, "hidden": ""},
             "summary": visible,
-            "movement": [],
         }
 
     def _build_fallback_resolve(self, narrative_result: dict[str, Any]) -> dict[str, Any]:
@@ -633,20 +636,20 @@ class DirectorAgent:
         ]
 
     def _normalize_plan(self, plan: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        user_intent = plan.get("user_intent", "")
+        player_input = self._normalize_player_input(plan.get("player_input", {}))
         context = plan.get("context", "")
         characters = []
         for character in plan.get("characters", []):
             if not isinstance(character, dict) or not character.get("id"):
                 continue
             enriched = self._enrich_character(character, state)
-            if user_intent and not enriched.get("user_intent"):
-                enriched["user_intent"] = user_intent
+            if player_input and not enriched.get("player_input"):
+                enriched["player_input"] = player_input
             if context and not enriched.get("context"):
                 enriched["context"] = context
             characters.append(enriched)
         return {
-            "user_intent": user_intent,
+            "player_input": player_input,
             "context": context,
             "characters": characters,
             "director_meta": plan.get("director_meta", {}),
@@ -674,7 +677,6 @@ class DirectorAgent:
                 "hidden": narrative.get("hidden", ""),
             },
             "summary": result.get("summary", ""),
-            "movement": result.get("movement", []),
         }
 
     def _normalize_resolve(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -767,17 +769,17 @@ class DirectorAgent:
         return str(narrative_result or "")
 
     def _active_effects(self, values: Any) -> list[str]:
-        if not isinstance(values, dict):
-            return []
         effects: list[str] = []
-        for value in values.values():
-            if not isinstance(value, dict):
+        for item in values.values():
+            if not isinstance(item, dict):
                 continue
-            active_effects = value.get("active_effects", [])
-            if isinstance(active_effects, list):
-                effects.extend(str(effect).strip() for effect in active_effects if str(effect).strip())
-            elif str(active_effects).strip():
-                effects.append(str(active_effects).strip())
+            if "active_effects" in item:
+                effects.extend(str(effect).strip() for effect in item.get("active_effects", []) if str(effect).strip())
+            else:
+                for nested in item.values():
+                    if not isinstance(nested, dict):
+                        continue
+                    effects.extend(str(effect).strip() for effect in nested.get("active_effects", []) if str(effect).strip())
         return effects
 
     def _enrich_character(self, character: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -786,8 +788,17 @@ class DirectorAgent:
             "id": character_id,
             "name": self._character_display_name(state, character_id),
             "order": character.get("order", 1),
-            "user_intent": character.get("user_intent", ""),
+            "player_input": self._normalize_player_input(character.get("player_input", {})),
             "context": character.get("context", ""),
+        }
+
+    def _normalize_player_input(self, player_input: Any) -> dict[str, str]:
+        if not isinstance(player_input, dict):
+            return {"intent": "", "action": "", "speech": ""}
+        return {
+            "intent": str(player_input.get("intent", "") or "").strip(),
+            "action": str(player_input.get("action", "") or "").strip(),
+            "speech": str(player_input.get("speech", "") or "").strip(),
         }
 
     def _log_complete_output(self, source: str, raw_text: str) -> None:

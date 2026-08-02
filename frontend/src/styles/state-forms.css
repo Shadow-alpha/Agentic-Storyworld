@@ -320,13 +320,24 @@
 }
 
 .custom-field input,
-.custom-field select {
+.custom-field select,
+.custom-field textarea {
   width: 100%;
   border: 1px solid rgba(216, 204, 186, 0.95);
   border-radius: 16px;
   padding: 11px 12px;
   background: rgba(255, 255, 255, 0.88);
   color: var(--ink);
+}
+
+.custom-field textarea {
+  min-height: 190px;
+  resize: vertical;
+  line-height: 1.75;
+}
+
+.customization-profile {
+  margin-top: 18px;
 }
 
 .customization-submit {

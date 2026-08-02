@@ -54,19 +54,12 @@ watch(
 
 <template>
   <div ref="listRef" class="message-list">
-    <article v-if="!turns.length" class="turn-card opening-card">
-      <div class="turn-header">
-        <div>
-          <div class="turn-kicker">Opening</div>
-          <h3>故事开场</h3>
-        </div>
+    <article class="turn-card opening-card">
+      <div class="opening-card-header">
+        <div class="turn-kicker">Opening</div>
+        <h3>故事开场</h3>
       </div>
-      <section class="turn-section narrative-section">
-        <div class="section-header">
-          <h4>Visible Narrative</h4>
-        </div>
-        <div class="narrative-box">{{ openingText }}</div>
-      </section>
+      <div class="opening-text">{{ openingText }}</div>
     </article>
 
     <TurnCard

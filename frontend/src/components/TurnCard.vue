@@ -56,6 +56,7 @@ const previewText = computed(() => {
 });
 
 const plan = computed(() => props.turn.plan || {});
+const planPlayerInput = computed(() => props.turn.plan?.player_input || {});
 const interactionOptions = computed(() => ensureArray(props.turn.director_result?.interaction?.options));
 const goalResolution = computed(() => props.turn.director_result?.goal_resolution || {});
 const completedGoals = computed(() => ensureArray(goalResolution.value.completed_goals));
@@ -114,6 +115,7 @@ const executionCards = computed(() => {
     const streamingFeedback = streamingById.get(character.id);
     const feedback = doneFeedback || streamingFeedback || null;
     const response = feedback?.response || "";
+    const rawText = feedback?.raw_text || "";
     const order = safeOrder(character.order, index + 1);
     const name = characterName(character.id, character.name);
 
@@ -122,6 +124,7 @@ const executionCards = computed(() => {
       name,
       order,
       response,
+      rawText,
       emotion: feedback?.emotion || "",
       stateUpdate: feedback?.state_update || {},
       updateRows: buildUpdateRows(feedback?.state_update || {}),
@@ -243,16 +246,15 @@ function checkpointLabel(goalId, checkpointId) {
 }
 
 function normalizeDeltaPath(path) {
-  if (path === "relation.user" || path === "relation.player" || path === "relations.user") {
-    return "relations.player";
-  }
-  const relationRules = props.state?.relation_rules || props.state?.config?.relation_rules || {};
   const statRules = props.state?.stat_rules || props.state?.config?.stat_rules || {};
-  if (!path.includes(".") && relationRules?.[path]) {
-    return `relations.${path}`;
-  }
   if (!path.includes(".") && statRules?.[path]) {
     return `stats.${path}.value`;
+  }
+  if (path.startsWith("relations.")) {
+    const segments = path.split(".");
+    if (segments.length === 3) {
+      return `${path}.value`;
+    }
   }
   if (path.startsWith("stats.") && !path.endsWith(".value")) {
     const segments = path.split(".");
@@ -353,8 +355,9 @@ function pathDisplayLabel(path) {
     return "物品";
   }
   if (normalizedPath.startsWith("relations.")) {
-    const target = normalizedPath.split(".")[1] || "";
-    return relationDisplayName(target);
+    const segments = normalizedPath.split(".");
+    const metric = segments.length >= 4 ? segments[2] : segments[1] || "";
+    return relationDisplayName(metric);
   }
   const statMatch = normalizedPath.match(/^stats\.([^.]+)\.value$/);
   if (statMatch) {
@@ -395,13 +398,18 @@ function buildUpdateRows(stateUpdate) {
       </div>
     </div>
 
-    <details v-if="plan.user_intent || plan.context || executionCards.length" class="plan-detail">
+    <details
+      v-if="planPlayerInput.intent || planPlayerInput.action || planPlayerInput.speech || plan.context || executionCards.length"
+      class="plan-detail"
+    >
       <summary>
         <span>本轮计划</span>
         <span>{{ executionCards.length ? `${executionCards.length} 位角色` : "无角色回应" }}</span>
       </summary>
       <div class="plan-detail-body">
-        <p v-if="plan.user_intent"><strong>意图：</strong>{{ plan.user_intent }}</p>
+        <p v-if="planPlayerInput.intent"><strong>意图：</strong>{{ planPlayerInput.intent }}</p>
+        <p v-if="planPlayerInput.action"><strong>行动：</strong>{{ planPlayerInput.action }}</p>
+        <p v-if="planPlayerInput.speech"><strong>对白：</strong>{{ planPlayerInput.speech }}</p>
         <p v-if="plan.context"><strong>上下文：</strong>{{ plan.context }}</p>
       </div>
     </details>
@@ -422,7 +430,8 @@ function buildUpdateRows(stateUpdate) {
           <div class="mini-bubble-text">
             {{
               card.response ||
-              (card.isPlanned || card.isResponding ? `${card.name} 正在回应...` : `${card.name} 本轮保持沉默。`)
+              card.rawText ||
+              (card.isPlanned || card.isResponding ? `${card.name} 正在回应...` : "")
             }}
           </div>
         </article>

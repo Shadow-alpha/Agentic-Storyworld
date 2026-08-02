@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .domains import GoalsDomain, LocationsDomain, MemoryDomain, PossessionsDomain, RelationsDomain, StatsDomain
+from .domains.base import DomainContext
+
 
 class StateManager:
     """Owns all runtime state reads and writes."""
@@ -31,6 +34,31 @@ class StateManager:
             "character_state": self.static_state.get("character_states", {}),
             "goals": self.static_state.get("goals", {}),
         }
+        self.stats_domain = StatsDomain()
+        self.relations_domain = RelationsDomain()
+        self.possessions_domain = PossessionsDomain()
+        self.locations_domain = LocationsDomain()
+        self.memory_domain = MemoryDomain(self.RECENT_TURN_MEMORY_LIMIT)
+        self.goals_domain = GoalsDomain()
+        self.domains = [
+            self.stats_domain,
+            self.relations_domain,
+            self.possessions_domain,
+            self.locations_domain,
+            self.memory_domain,
+            self.goals_domain,
+        ]
+        self.agent_view_domains = [
+            self.goals_domain,
+            self.locations_domain,
+            self.stats_domain,
+            self.relations_domain,
+            self.possessions_domain,
+            self.memory_domain,
+        ]
+        self.state_update_domains = [
+            domain for domain in self.domains if getattr(domain, "update_tag", None) == "state_update"
+        ]
 
     def initialize_runtime(self, reset: bool = False) -> None:
         """Create runtime if needed, then load runtime state and logs once."""
@@ -59,53 +87,23 @@ class StateManager:
         runtime_state = self.get_runtime_state()
         state_view = self._build_state_view(runtime_state)
         state_view["config"] = self._without_display_names(state_view.get("config", {}))
-        state_view["goals"] = self._build_agent_goals_view(runtime_state.get("goals", {}))
-        world_state = state_view.get("world_state", {})
-        map_locations = {}
-        if isinstance(world_state, dict):
-            map_locations = world_state.get("map_locations", {})
-            if not isinstance(map_locations, dict):
-                map_locations = {}
+        context = self._domain_context(state_view["config"])
         user_state = state_view.get("user_state", {})
         if isinstance(user_state, dict):
             if runtime_state.get("player_profile"):
                 user_state["player_profile"] = runtime_state["player_profile"]
-            user_location = user_state.get("location")
-            if user_location in map_locations and isinstance(map_locations[user_location], dict):
-                user_state["location"] = {"id": user_location, **deepcopy(map_locations[user_location])}
-            user_state["stats"] = self._build_agent_stat_view(state_view)
-            user_state["relations"] = self._build_user_character_relations(
-                state_view.get("characters", {}),
-                state_view.get("config", {}),
-            )
-            user_state["possessions"] = self._expand_possessions(
-                user_state.get("possessions", []),
-                state_view.get("config", {}),
-            )
-        for character_id, character in state_view.get("characters", {}).items():
-            character["memory"] = self._build_agent_memory_view(character.get("memory", ""))
-            character_state = character.get("state", {})
-            if isinstance(character_state, dict):
-                character_location = character_state.get("location")
-                if character_location in map_locations and isinstance(map_locations[character_location], dict):
-                    character_state["location"] = {"id": character_location, **deepcopy(map_locations[character_location])}
-                character_state["stats"] = self._build_character_agent_stat_view(
-                    character_state,
-                    state_view.get("config", {}),
-                )
-                relation_rules = state_view.get("config", {}).get("relation_rules", {})
-                character_state["relations"] = self._compact_stats(relation_rules, character_state.get("relations", {}))
-                character_state["possessions"] = self._expand_possessions(
-                    character_state.get("possessions", []),
-                    state_view.get("config", {}),
-                )
+        for domain in self.agent_view_domains:
+            state_view = domain.get_agent_view(state_view, context)
         return state_view
 
     def get_ui_state_view(self) -> dict[str, Any]:
         """Return a normalized state view for frontend rendering."""
         runtime_state = self.get_runtime_state()
         state_view = self._build_state_view(runtime_state)
-        state_view["goals"] = self._build_ui_goals_view(runtime_state.get("goals", {}))
+        state_view["goals"] = self.goals_domain.get_ui_view(
+            runtime_state.get("goals", {}),
+            self._domain_context(state_view.get("config", {})),
+        )
         state_view["player_display_name"] = self._player_display_name(runtime_state.get("player_profile", ""))
         state_view["player_profile"] = runtime_state.get("player_profile", "")
         state_view["stat_rules"] = state_view.get("config", {}).get("stat_rules", {})
@@ -257,12 +255,20 @@ class StateManager:
             return {}
         runtime_state = self.get_runtime_state()
         config = runtime_state.get("config", {})
-        allowed_fields = config.get("player_customization", {}) if isinstance(config, dict) else {}
-        if not isinstance(allowed_fields, dict) or not allowed_fields:
+        customization = config.get("player_customization", {}) if isinstance(config, dict) else {}
+        if not isinstance(customization, dict) or not customization:
             return {}
+        profile = customization.get("profile")
+        uses_profile_template = isinstance(customization.get("fields"), dict) or (
+            isinstance(profile, dict) and isinstance(profile.get("template"), str)
+        )
+        field_configs = customization.get("fields") if uses_profile_template else customization
+        if not isinstance(field_configs, dict):
+            field_configs = {}
+        profile_config = profile if uses_profile_template and isinstance(profile, dict) else None
 
         accepted: dict[str, Any] = {}
-        for field_name, field_config in allowed_fields.items():
+        for field_name, field_config in field_configs.items():
             if field_name not in values:
                 continue
             value = values.get(field_name)
@@ -276,9 +282,11 @@ class StateManager:
             elif isinstance(value, str):
                 value = value.strip()
             accepted[field_name] = value
+        if profile_config is not None and isinstance(values.get("profile"), str):
+            accepted["profile"] = values["profile"].strip()
 
         if accepted:
-            profile_text = self._build_player_profile_text(accepted, allowed_fields)
+            profile_text = self._build_player_profile_text(accepted, field_configs, profile_config)
             runtime_state["player_profile"] = profile_text
             (self.runtime_dir / "player_profile.txt").write_text(profile_text, encoding="utf-8")
         return accepted
@@ -327,11 +335,23 @@ class StateManager:
             )
         return saves
 
+    def _domain_context(self, config: dict[str, Any] | None = None) -> DomainContext:
+        """Build shared helpers for domain view/update classes."""
+        runtime_config = config if config is not None else self.get_runtime_state().get("config", {})
+        return DomainContext(
+            config=runtime_config if isinstance(runtime_config, dict) else {},
+            static_state=self.static_state,
+            condition_met=self._condition_met,
+            coerce_value=self._coerce_delta_value,
+            record_change=self._record_change,
+        )
+
     def _apply_world_update(self, runtime_state: dict[str, Any], delta: Any) -> dict[str, dict[str, str]]:
         """Apply world_state updates that match the runtime file structure."""
         world_state = runtime_state.setdefault("world_state", {})
         world_delta = self._normalize("world_state", delta)
         changes: dict[str, dict[str, str]] = {}
+        changes.update(self._apply_domain_updates(world_state, world_delta, self._domain_context()))
         self._merge_known_fields(world_state, world_delta, changes)
         if changes:
             self._write_runtime_state()
@@ -341,8 +361,8 @@ class StateManager:
         """Apply user_state updates after normalization and stat-rule clamping."""
         user_state = runtime_state.setdefault("user_state", {})
         user_delta = self._normalize("user_state", delta)
-        user_delta = self._apply_state_rules("user_state", user_delta, user_state)
         changes: dict[str, dict[str, str]] = {}
+        changes.update(self._apply_domain_updates(user_state, user_delta, self._domain_context()))
         self._merge_known_fields(user_state, user_delta, changes)
         if changes:
             self._write_runtime_state()
@@ -377,7 +397,8 @@ class StateManager:
                 self._filter_character_state_update(update.get("state_update", {}), character_id),
                 character_id=character_id,
             )
-            character_delta = self._apply_state_rules("character_state", character_delta, character_state)
+            context = self._domain_context()
+            character_changes.update(self._apply_domain_updates(character_state, character_delta, context))
             self._merge_known_fields(character_state, character_delta, character_changes)
             if character_changes:
                 changes[character_id] = character_changes
@@ -398,17 +419,35 @@ class StateManager:
             self._write_runtime_state()
         return changes
 
+    def _apply_domain_updates(
+        self,
+        target_state: dict[str, Any],
+        delta: dict[str, Any],
+        context: DomainContext,
+    ) -> dict[str, Any]:
+        changes: dict[str, Any] = {}
+        for domain in self.state_update_domains:
+            key = getattr(domain, "update_key", "")
+            if key in delta:
+                changes.update(domain.apply_update(target_state, delta.pop(key), context, path=(key,)))
+        return changes
+
     def _filter_character_state_update(self, delta: Any, character_id: str) -> dict[str, Any]:
         """Keep only character stats/relations updates from the state_update block."""
         if not isinstance(delta, dict):
             return {}
         template = self._get_base_template("character_state", character_id=character_id)
         allowed = {"location", "stats", "relations"}
-        for group_name in ("stats", "relations"):
-            group_template = template.get(group_name, {}) if isinstance(template, dict) else {}
-            if isinstance(group_template, dict):
-                allowed.update(group_template.keys())
-        return {key: value for key, value in delta.items() if key in allowed}
+        stats_template = template.get("stats", {}) if isinstance(template, dict) else {}
+        if isinstance(stats_template, dict):
+            allowed.update(stats_template.keys())
+        filtered = {key: value for key, value in delta.items() if key in allowed}
+        if "location" in filtered:
+            location = self._extract_update_value(filtered["location"])
+            map_locations = self.static_state.get("world_state", {}).get("map_locations", {})
+            if not isinstance(map_locations, dict) or location not in map_locations:
+                filtered.pop("location", None)
+        return filtered
 
     def _load_logs(self) -> dict[str, list[dict[str, Any]]]:
         """Load runtime JSONL turn logs into memory."""
@@ -432,43 +471,6 @@ class StateManager:
                 if text:
                     lines.append(f"[core] {text}")
         return "\n".join(lines)
-
-    def _build_agent_memory_view(self, memory_text: Any) -> dict[str, list[dict[str, Any]]]:
-        """Return core memories and recent turn memories for character prompts."""
-        parsed = self._parse_character_memory(memory_text)
-        return {
-            "core": parsed["core"],
-            "turns": parsed["turns"][-self.RECENT_TURN_MEMORY_LIMIT:],
-        }
-
-    def _parse_character_memory(self, memory_text: Any) -> dict[str, list[dict[str, Any]]]:
-        """Parse MEMORY.md turn headers and [turn]/[core] lines."""
-        parsed: dict[str, list[dict[str, Any]]] = {"core": [], "turns": []}
-        current_turn: int | None = None
-        for raw_line in str(memory_text or "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.lower().startswith("## turn"):
-                current_turn = self._parse_turn_number(line)
-                continue
-            lowered = line.lower()
-            if lowered.startswith("[core]"):
-                text = line[6:].strip()
-                if text:
-                    parsed["core"].append({"turn": current_turn, "text": text})
-            elif lowered.startswith("[turn]"):
-                text = line[6:].strip()
-                if text:
-                    parsed["turns"].append({"turn": current_turn, "text": text})
-        return parsed
-
-    def _parse_turn_number(self, line: str) -> int | None:
-        """Extract the numeric turn from a MEMORY.md header."""
-        for token in line.replace("#", " ").split():
-            if token.isdigit():
-                return int(token)
-        return None
 
     def _append_log_record(self, log_name: str, record: dict[str, Any]) -> None:
         """Append one log record to the in-memory cache and JSONL file."""
@@ -538,8 +540,27 @@ class StateManager:
             "player_profile": self._read_text(self.runtime_dir / "player_profile.txt"),
         }
 
-    def _build_player_profile_text(self, accepted: dict[str, Any], allowed_fields: dict[str, Any]) -> str:
+    def _build_player_profile_text(
+        self,
+        accepted: dict[str, Any],
+        allowed_fields: dict[str, Any],
+        profile_config: dict[str, Any] | None = None,
+    ) -> str:
         """Format player customization values for agent prompts."""
+        profile_text = str(accepted.get("profile", "")).strip()
+        if profile_config is not None:
+            lines = []
+            if "name" in accepted:
+                name_config = allowed_fields.get("name", {})
+                label = name_config.get("label", "姓名") if isinstance(name_config, dict) else "姓名"
+                lines.append(f"{label}:{accepted['name']}")
+            if profile_text:
+                if lines:
+                    lines.append("")
+                lines.append(f"{profile_config.get('label', '玩家设定')}:")
+                lines.append(profile_text)
+            return "\n".join(lines)
+
         lines = []
         for field_name, field_config in allowed_fields.items():
             if field_name not in accepted:
@@ -803,109 +824,6 @@ class StateManager:
             return "未知"
         return str(value)
 
-    def _apply_state_rules(
-        self,
-        kind: str,
-        delta: dict[str, Any],
-        current_state: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Clamp configured stat/relation updates before merging into runtime."""
-        if not isinstance(delta, dict):
-            return {}
-        config = self.get_runtime_state().get("config", {})
-        stat_rules = config.get("stat_rules", {}) if isinstance(config, dict) else {}
-        if not isinstance(stat_rules, dict):
-            return delta
-
-        normalized = deepcopy(delta)
-        self._clamp_stats_delta(normalized, current_state, stat_rules)
-
-        if kind == "character_state":
-            self._clamp_relations_delta(
-                normalized,
-                current_state,
-                config.get("relation_rules", {}) if isinstance(config, dict) else {},
-            )
-        return normalized
-
-    def _clamp_stats_delta(
-        self,
-        delta: dict[str, Any],
-        current_state: dict[str, Any],
-        stat_rules: Any,
-    ) -> None:
-        """Clamp stats.*.value updates using configured range and max delta."""
-        stats_delta = delta.get("stats")
-        if not isinstance(stats_delta, dict) or not isinstance(stat_rules, dict):
-            return
-        current_stats = current_state.get("stats", {})
-        if not isinstance(current_stats, dict):
-            current_stats = {}
-        for stat_name, stat_delta in list(stats_delta.items()):
-            if not isinstance(stat_delta, dict) or "value" not in stat_delta:
-                continue
-            rule = stat_rules.get(stat_name, {})
-            current_entry = current_stats.get(stat_name, {})
-            current_value = current_entry.get("value") if isinstance(current_entry, dict) else current_entry
-            stat_delta["value"] = self._clamp_rule_value(stat_delta.get("value"), current_value, rule)
-
-    def _clamp_relations_delta(
-        self,
-        delta: dict[str, Any],
-        current_state: dict[str, Any],
-        relation_rule: Any,
-    ) -> None:
-        """Clamp relation updates using shared relation rules."""
-        relations_delta = delta.get("relations")
-        if not isinstance(relations_delta, dict):
-            return
-        current_relations = current_state.get("relations", {})
-        if not isinstance(current_relations, dict):
-            current_relations = {}
-        if not isinstance(relation_rule, dict):
-            relation_rule = {}
-        for key, value in list(relations_delta.items()):
-            relations_delta[key] = self._clamp_rule_value(value, current_relations.get(key), relation_rule.get(key, {}))
-
-    def _clamp_rule_value(self, value: Any, current_value: Any, rule: Any) -> Any:
-        """Apply numeric range and max-delta constraints when configured."""
-        if isinstance(value, dict) and "value" in value:
-            clamped = dict(value)
-            clamped["value"] = self._clamp_rule_value(value.get("value"), current_value, rule)
-            return clamped
-        value = self._coerce_delta_value(value)
-        if not isinstance(rule, dict):
-            return value
-        try:
-            next_value = float(value)
-        except (TypeError, ValueError):
-            return value
-
-        value_range = rule.get("range")
-        if isinstance(value_range, list) and len(value_range) == 2:
-            try:
-                lower = float(value_range[0])
-                upper = float(value_range[1])
-                next_value = max(lower, min(upper, next_value))
-            except (TypeError, ValueError):
-                pass
-
-        try:
-            current_number = float(current_value)
-            max_delta = float(rule.get("max_delta_per_turn"))
-        except (TypeError, ValueError):
-            max_delta = None
-        if max_delta is not None and max_delta >= 0:
-            lower = current_number - max_delta
-            upper = current_number + max_delta
-            next_value = max(lower, min(upper, next_value))
-
-        if isinstance(current_value, int) and not isinstance(current_value, bool):
-            return int(round(next_value))
-        if isinstance(value, int) and not isinstance(value, bool):
-            return int(round(next_value))
-        return next_value
-
     def _build_state_view(self, runtime_state: dict[str, Any]) -> dict[str, Any]:
         """Build normalized state views from raw runtime data."""
         user_state_raw = runtime_state.get("user_state", {})
@@ -938,140 +856,6 @@ class StateManager:
             return first_line.split(":", 1)[1].strip()
         return first_line
 
-    def _build_ui_goals_view(self, runtime_goals: Any) -> dict[str, Any]:
-        """Return goal definitions plus runtime progress for frontend rendering."""
-        if not isinstance(runtime_goals, dict):
-            runtime_goals = {}
-        base_goals = self.static_state.get("goals", {})
-        return {
-            "definitions": deepcopy(base_goals.get("goals", {})) if isinstance(base_goals, dict) else {},
-            "endings": deepcopy(base_goals.get("endings", {})) if isinstance(base_goals, dict) else {},
-            "active_goals": deepcopy(runtime_goals.get("active_goals", {})) if isinstance(runtime_goals.get("active_goals"), dict) else {},
-            "available_goals": deepcopy(runtime_goals.get("available_goals", {})) if isinstance(runtime_goals.get("available_goals"), dict) else {},
-            "completed_goals": list(runtime_goals.get("completed_goals", [])) if isinstance(runtime_goals.get("completed_goals"), list) else [],
-            "ending_state": deepcopy(runtime_goals.get("ending_state", {})) if isinstance(runtime_goals.get("ending_state"), dict) else {},
-        }
-
-    def _build_agent_goals_view(self, runtime_goals: Any) -> dict[str, Any]:
-        """Return only active goals with checkpoint runtime statuses for agent prompts."""
-        if not isinstance(runtime_goals, dict):
-            return {}
-
-        goals = self._goal_definitions()
-        active_goals = runtime_goals.get("active_goals", {})
-        if not isinstance(goals, dict) or not isinstance(active_goals, dict):
-            return {}
-
-        active_goal_items: dict[str, Any] = {}
-
-        for goal_id, runtime_checkpoints in active_goals.items():
-            if goal_id not in goals:
-                continue
-            source_goal = goals[goal_id]
-            if not isinstance(source_goal, dict):
-                continue
-            goal_item = {
-                "title": source_goal.get("title", ""),
-                "description": source_goal.get("description", ""),
-            }
-            if source_goal.get("type"):
-                goal_item["type"] = source_goal.get("type")
-
-            checkpoints = deepcopy(source_goal.get("checkpoints", []))
-            if isinstance(checkpoints, list):
-                for checkpoint in checkpoints:
-                    if not isinstance(checkpoint, dict):
-                        continue
-                    checkpoint_state = runtime_checkpoints.get(checkpoint.get("id"), {}) if isinstance(runtime_checkpoints, dict) else {}
-                    if isinstance(checkpoint_state, dict):
-                        checkpoint.update(deepcopy(checkpoint_state))
-                    checkpoint["status"] = self._normalize_checkpoint_status(checkpoint.get("status", "unstarted"))
-                    checkpoint.setdefault("progress_note", "")
-                goal_item["checkpoints"] = checkpoints
-            else:
-                goal_item["checkpoints"] = []
-            active_goal_items[goal_id] = goal_item
-
-        return {
-            "active_goals": active_goal_items,
-        }
-
-    def _build_agent_stat_view(self, state_view: dict[str, Any]) -> dict[str, Any]:
-        """Return player stat values plus semantic rules for agent prompts."""
-        config = state_view.get("config", {})
-        stat_rules = config.get("stat_rules", {}) if isinstance(config, dict) else {}
-        user_state = state_view.get("user_state", {})
-        return self._compact_stats(stat_rules, user_state.get("stats", {}))
-
-    def _build_character_agent_stat_view(
-        self,
-        character_state: dict[str, Any],
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return character stat/relation values plus semantic rules."""
-        stat_rules = config.get("stat_rules", {}) if isinstance(config, dict) else {}
-        return self._compact_stats(stat_rules, character_state.get("stats", {}))
-
-    def _expand_possessions(self, possessions: Any, config: Any) -> list[dict[str, Any]]:
-        """Return possessed item ids enriched with config.items details."""
-        if not isinstance(possessions, list):
-            return []
-        item_defs = config.get("items", {}) if isinstance(config, dict) else {}
-        if not isinstance(item_defs, dict):
-            item_defs = {}
-        expanded: list[dict[str, Any]] = []
-        for item_id in possessions:
-            if not isinstance(item_id, str):
-                continue
-            item = item_defs.get(item_id, {})
-            if isinstance(item, dict):
-                expanded.append({"id": item_id, **item})
-            else:
-                expanded.append({"id": item_id})
-        return expanded
-
-    def _build_user_character_relations(self, characters: Any, config: Any) -> dict[str, Any]:
-        """Summarize each character's relation to the player for agent prompts."""
-        if not isinstance(characters, dict):
-            return {}
-        relation_rules = config.get("relation_rules", {}) if isinstance(config, dict) else {}
-        player_rule = relation_rules.get("player", {}) if isinstance(relation_rules, dict) else {}
-        relations: dict[str, Any] = {}
-        for character_id, character in characters.items():
-            character_state = character.get("state", {}) if isinstance(character, dict) else {}
-            character_relations = character_state.get("relations", {}) if isinstance(character_state, dict) else {}
-            if not isinstance(character_relations, dict):
-                continue
-            if "player" in character_relations:
-                value = character_relations["player"]
-                relations[character_id] = self._compact_one_rule(player_rule, value) if player_rule else value
-        return relations
-
-    def _compact_stats(self, rules: Any, stats: Any) -> dict[str, Any]:
-        """Keep stat values, semantic rules, and currently active effects."""
-        if not isinstance(rules, dict) or not isinstance(stats, dict):
-            return {}
-        compact: dict[str, Any] = {}
-        for stat_name, stat_value in stats.items():
-            rule = rules.get(stat_name, {})
-            if not isinstance(rule, dict):
-                continue
-            current_value = stat_value.get("value") if isinstance(stat_value, dict) else stat_value
-            compact[stat_name] = self._compact_one_rule(rule, current_value)
-        return compact
-
-    def _compact_one_rule(self, rule: dict[str, Any], value: Any) -> dict[str, Any]:
-        """Return one LLM-facing stat item with its current value."""
-        compact = {
-            "value": value,
-            "description": rule.get("description", ""),
-            "update_guidance": rule.get("update_guidance", ""),
-        }
-        active_effects = self._active_effect_descriptions(rule, value)
-        if active_effects:
-            compact["active_effects"] = active_effects
-        return compact
-
     def _without_display_names(self, value: Any) -> Any:
         """Remove UI-only display labels from LLM-facing state views."""
         if isinstance(value, dict):
@@ -1083,21 +867,6 @@ class StateManager:
         if isinstance(value, list):
             return [self._without_display_names(item) for item in value]
         return value
-
-    def _active_effect_descriptions(self, rule: dict[str, Any], value: Any) -> list[str]:
-        """Return descriptions for effects whose condition matches the current value."""
-        effects = rule.get("effects", [])
-        if not isinstance(effects, list):
-            return []
-        active: list[str] = []
-        for effect in effects:
-            if not isinstance(effect, dict):
-                continue
-            if self._condition_met(value, effect.get("condition", {})):
-                description = effect.get("description")
-                if description:
-                    active.append(str(description))
-        return active
 
     def _ensure_goal_runtime_fields(self) -> None:
         """Ensure runtime goals carry supported status fields."""
@@ -1366,32 +1135,11 @@ class StateManager:
             return {}
 
         normalized = dict(payload)
-        if kind == "character_state":
-            normalized = self._normalize_relation_aliases(normalized)
 
         if kind in {"user_state", "character_state"}:
             normalized = self._normalize_state_groups(normalized, template)
 
         return self._project_to_template(normalized, template)
-
-    def _normalize_relation_aliases(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Normalize relation/relation.user aliases into relations.player."""
-        normalized = dict(payload)
-        merged_relations: dict[str, Any] = {}
-        for key in ("relation", "relations"):
-            value = normalized.pop(key, None)
-            if isinstance(value, dict):
-                merged_relations.update(value)
-        if "user" in merged_relations and "player" not in merged_relations:
-            merged_relations["player"] = merged_relations.pop("user")
-        if not merged_relations:
-            return normalized
-
-        existing_relations = normalized.get("relations", {})
-        if not isinstance(existing_relations, dict):
-            existing_relations = {}
-        normalized["relations"] = {**existing_relations, **merged_relations}
-        return normalized
 
     def _normalize_state_groups(self, payload: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
         """Move loose numeric fields into stats/relations according to the template."""
@@ -1403,6 +1151,11 @@ class StateManager:
             nested_group = normalized.pop(group_name, {})
             if not isinstance(nested_group, dict):
                 nested_group = {}
+            if group_name == "relations":
+                projected_relations = self._project_to_template(nested_group, group_template)
+                if projected_relations:
+                    normalized[group_name] = projected_relations
+                continue
             normalized_group: dict[str, Any] = {}
             for field_name in group_template:
                 value = nested_group.get(field_name)

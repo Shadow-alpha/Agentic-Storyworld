@@ -58,7 +58,27 @@ function statEntries(stats) {
 }
 
 function relationEntries(relations) {
-  return Object.entries(relations || {});
+  const rows = [];
+  Object.entries(relations || {}).forEach(([targetKey, targetValue]) => {
+    if (targetValue && typeof targetValue === "object" && !Array.isArray(targetValue) && !("value" in targetValue)) {
+      Object.entries(targetValue).forEach(([relationKey, relationValue]) => {
+        rows.push({
+          key: `${targetKey}.${relationKey}`,
+          targetKey,
+          relationKey,
+          value: relationValue,
+        });
+      });
+      return;
+    }
+    rows.push({
+      key: `player.${targetKey}`,
+      targetKey: "player",
+      relationKey: targetKey,
+      value: targetValue,
+    });
+  });
+  return rows;
 }
 
 function fieldEntries(value, excludedKeys = ["stats", "relations", "role", "player_profile"]) {
@@ -362,16 +382,19 @@ function markCharacterImageFailed(characterId) {
         <div v-if="selectedCharacter && relationEntries(selectedCharacter.state?.relations).length" class="subcard-block">
           <div class="state-bar-list">
             <div
-              v-for="[relationKey, relationValue] in relationEntries(selectedCharacter.state?.relations)"
-              :key="relationKey"
+              v-for="relation in relationEntries(selectedCharacter.state?.relations)"
+              :key="relation.key"
               class="state-bar-row"
             >
               <div class="state-bar-meta">
-                <span>{{ relationLabel(relationKey) }}</span>
-                <span>{{ valueOf(relationValue) }} / {{ rangeText(relationRule(relationKey)) }}</span>
+                <span>{{ relationLabel(relation.relationKey) }}</span>
+                <span>{{ valueOf(relation.value) }} / {{ rangeText(relationRule(relation.relationKey)) }}</span>
               </div>
               <div class="state-bar-track">
-                <span class="state-bar-fill relation-fill" :style="{ width: `${percentFor(valueOf(relationValue), relationRule(relationKey))}%` }"></span>
+                <span
+                  class="state-bar-fill relation-fill"
+                  :style="{ width: `${percentFor(valueOf(relation.value), relationRule(relation.relationKey))}%` }"
+                ></span>
               </div>
             </div>
           </div>

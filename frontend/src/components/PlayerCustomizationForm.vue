@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 
 const props = defineProps({
   fields: {
@@ -11,8 +11,38 @@ const props = defineProps({
 const emit = defineEmits(["submit"]);
 
 const formValues = reactive({});
+const profileText = ref("");
 
-const fieldEntries = computed(() => Object.entries(props.fields || {}));
+const usesProfileTemplate = computed(() => !!props.fields?.fields || typeof props.fields?.profile?.template === "string");
+const fieldConfigs = computed(() => {
+  const config = props.fields || {};
+  return usesProfileTemplate.value ? config.fields || {} : config;
+});
+const profileConfig = computed(() => {
+  const profile = props.fields?.profile;
+  return usesProfileTemplate.value && profile && typeof profile === "object" ? profile : null;
+});
+const fieldEntries = computed(() => Object.entries(fieldConfigs.value || {}));
+const hasProfileTemplate = computed(() => !!profileConfig.value);
+
+function fieldLabel(fieldKey) {
+  return fieldConfigs.value?.[fieldKey]?.label || fieldKey;
+}
+
+function displayTemplateWithLabels(template) {
+  return String(template || "").replace(/\{([^}]+)\}/g, (_, key) => `{${fieldLabel(key.trim())}}`);
+}
+
+function resolveProfileTemplate(text) {
+  let resolved = String(text || "");
+  for (const [fieldKey, fieldConfig] of fieldEntries.value) {
+    const label = fieldConfig?.label || fieldKey;
+    const value = formValues[fieldKey] ?? "";
+    resolved = resolved.split(`{${label}}`).join(value);
+    resolved = resolved.split(`{${fieldKey}}`).join(value);
+  }
+  return resolved.trim();
+}
 
 function resetValues() {
   for (const key of Object.keys(formValues)) {
@@ -21,10 +51,15 @@ function resetValues() {
   for (const [key, config] of fieldEntries.value) {
     formValues[key] = config?.default ?? "";
   }
+  profileText.value = hasProfileTemplate.value ? displayTemplateWithLabels(profileConfig.value.template) : "";
 }
 
 function submitForm() {
-  emit("submit", { ...formValues });
+  const values = { ...formValues };
+  if (hasProfileTemplate.value) {
+    values.profile = resolveProfileTemplate(profileText.value);
+  }
+  emit("submit", values);
 }
 
 watch(() => props.fields, resetValues, { immediate: true, deep: true });
@@ -56,6 +91,14 @@ watch(() => props.fields, resetValues, { immediate: true, deep: true });
         />
       </label>
     </div>
+
+    <label v-if="hasProfileTemplate" class="custom-field customization-profile">
+      <span>{{ profileConfig.label || "玩家设定" }}</span>
+      <textarea
+        v-model="profileText"
+        rows="8"
+      />
+    </label>
 
     <button type="submit" class="customization-submit primary-submit">确认玩家信息</button>
   </form>

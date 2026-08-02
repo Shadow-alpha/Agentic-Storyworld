@@ -251,8 +251,6 @@ function handleBlockEvent(turn, eventName, data) {
       turn.director_result.scene = data.parsed || data.text || "";
     } else if (eventName === "block_done" && block === "summary") {
       turn.director_result.summary = data.parsed || data.text || "";
-    } else if (eventName === "block_done" && block === "movement") {
-      turn.director_result.movement = data.parsed || [];
     }
     return;
   }
@@ -277,8 +275,12 @@ function handleBlockEvent(turn, eventName, data) {
     const item = ensureStreamingCharacter(turn, data.character_id);
     if (block === "emotion") {
       item.emotion = eventName === "block_done" ? data.parsed || data.text || item.emotion : data.text || item.emotion;
+    } else if (eventName === "block_done" && block === "location" && data.parsed?.value) {
+      item.state_update = { ...(item.state_update || {}), location: data.parsed };
     } else if (eventName === "block_done" && block === "state_update") {
+      const location = item.state_update?.location;
       item.state_update = data.parsed || {};
+      if (location) item.state_update.location = location;
     } else if (eventName === "block_done" && block === "memory_append") {
       item.memory_append = data.parsed?.text || data.parsed || "";
     }
@@ -443,10 +445,11 @@ async function onSubmitChat() {
   if (!rawText) {
     return;
   }
+  chatInput.value = "";
   try {
     await sendMessage(buildInputPayload(rawText));
-    chatInput.value = "";
   } catch (error) {
+    chatInput.value = rawText;
     setConnectionStatus("Error", false);
     window.alert(error.message);
   }

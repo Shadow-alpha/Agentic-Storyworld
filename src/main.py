@@ -153,6 +153,7 @@ class GameApp:
         logs = self.state_manager.get_logs()
         agent_user_input = self._agent_user_input(user_input)
         plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs)
+        player_input = plan.get("player_input", {})
         ordered_feedback = self._run_dialogue(plan, state_before)
         narrative_env_feedback = self._narrative_env_feedback(ordered_feedback)
         env_feedback = self.environment.finalize_feedback(ordered_feedback)
@@ -160,14 +161,14 @@ class GameApp:
             env_feedback=narrative_env_feedback,
             state=state_before,
             logs=logs,
-            user_input=agent_user_input,
+            user_input=player_input,
         )
         resolve_result, reflections = self._resolve_and_reflect(
             ordered_feedback,
             narrative_result,
             state_before,
             logs,
-            agent_user_input,
+            player_input,
         )
         self._merge_reflections(ordered_feedback, reflections)
         env_feedback = self.environment.finalize_feedback(ordered_feedback)
@@ -193,6 +194,7 @@ class GameApp:
 
         if plan is None:
             plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs)
+        player_input = plan.get("player_input", {})
 
         ordered_feedback: list[dict[str, Any]] = []
         turn_dialogue: list[dict[str, str]] = []
@@ -209,6 +211,7 @@ class GameApp:
                         character_feedback = data["character_feedback"]
                         character_feedback["order"] = character.get("order", 1)
                         character_feedback["raw_response"] = character_feedback.get("response", "")
+                        character_feedback["raw_text"] = character_feedback.get("raw_text", "")
                         character_feedback["visible_dialogue"] = self.environment.visible_dialogue(
                             character_feedback.get("response", "")
                         )
@@ -230,7 +233,7 @@ class GameApp:
             env_feedback=narrative_env_feedback,
             state=state_before,
             logs=logs,
-            user_input=agent_user_input,
+            user_input=player_input,
         ):
             data = dict(event.get("data", {}))
             if event["event"] == "stage_done" and data.get("stage") == "director_narrative":
@@ -243,7 +246,7 @@ class GameApp:
                 env_feedback=narrative_env_feedback,
                 state=state_before,
                 logs=logs,
-                user_input=agent_user_input,
+                user_input=player_input,
             )
 
         resolve_result: dict[str, Any] | None = None
@@ -253,7 +256,7 @@ class GameApp:
             narrative_result,
             state_before,
             logs,
-            agent_user_input,
+            player_input,
         ):
             data = dict(event.get("data", {}))
             if event["event"] == "stage_done" and data.get("stage") == "director_resolve":
@@ -270,7 +273,7 @@ class GameApp:
                 narrative_result=narrative_result,
                 state=state_before,
                 logs=logs,
-                user_input=agent_user_input,
+                user_input=player_input,
             )
 
         self._merge_reflections(ordered_feedback, reflections)
@@ -307,7 +310,7 @@ class GameApp:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str,
+        user_input: Any,
     ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
         reflection_targets = self._reflection_targets(ordered_feedback)
         with ThreadPoolExecutor(max_workers=max(1, len(reflection_targets) + 1)) as executor:
@@ -322,7 +325,7 @@ class GameApp:
                 executor.submit(
                     self.environment.character_agent.reflect,
                     character_id,
-                    self._reflection_context(feedback, narrative_result),
+                    self._reflection_context(feedback, narrative_result, state),
                     state,
                 ): character_id
                 for character_id, feedback in reflection_targets.items()
@@ -339,7 +342,7 @@ class GameApp:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
         logs: dict[str, Any],
-        user_input: str,
+        user_input: Any,
     ) -> Iterator[dict[str, Any]]:
         reflection_targets = self._reflection_targets(ordered_feedback)
         factories = [
@@ -354,7 +357,7 @@ class GameApp:
             factories.append(
                 lambda character_id=character_id, feedback=feedback: self.environment.character_agent.stream_reflect(
                     character_id,
-                    self._reflection_context(feedback, narrative_result),
+                    self._reflection_context(feedback, narrative_result, state),
                     state,
                 )
             )
@@ -404,10 +407,23 @@ class GameApp:
             )
         return targets
 
-    def _reflection_context(self, feedback: dict[str, Any], narrative_result: dict[str, Any]) -> dict[str, Any]:
+    def _reflection_context(
+        self,
+        feedback: dict[str, Any],
+        narrative_result: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        world_state = state.get("world_state", {}) if isinstance(state, dict) else {}
+        map_locations = world_state.get("map_locations", {}) if isinstance(world_state, dict) else {}
+        known_scene_ids = {
+            scene_id: scene.get("name", scene_id)
+            for scene_id, scene in map_locations.items()
+            if isinstance(scene, dict)
+        } if isinstance(map_locations, dict) else {}
         return {
             "raw_response": feedback.get("raw_response") or feedback.get("response", ""),
             "final_narrative": narrative_result,
+            "known_scene_ids": known_scene_ids,
         }
 
     def _merge_reflections(
@@ -516,7 +532,6 @@ class GameApp:
             "scene": source.get("scene", ""),
             "narrative": source.get("narrative", {}),
             "summary": source.get("summary", ""),
-            "movement": source.get("movement", []),
             "goal_update": source.get("goal_update", {}),
             "goal_resolution": source.get("goal_resolution", {}),
             "ending": source.get("ending", {}),
@@ -537,7 +552,7 @@ class GameApp:
                 }
             )
         return {
-            "user_intent": plan.get("user_intent", ""),
+            "player_input": plan.get("player_input", {}),
             "context": plan.get("context", ""),
             "characters": characters,
         }
@@ -559,6 +574,7 @@ class GameApp:
                     "name": feedback.get("name", character_id),
                     "order": feedback.get("order", 1),
                     "response": feedback.get("response", ""),
+                    "raw_text": feedback.get("raw_text", ""),
                     "emotion": feedback.get("emotion", ""),
                     "state_update": self._display_state_changes(
                         character_changes.get(character_id, {}),
@@ -580,7 +596,6 @@ class GameApp:
             "scene": director_result.get("scene", ""),
             "narrative": director_result.get("narrative", {}),
             "summary": director_result.get("summary", ""),
-            "movement": director_result.get("movement", []),
             "goal_update": director_result.get("goal_update", {}),
             "goal_resolution": director_result.get("goal_resolution", {}),
             "ending": director_result.get("ending", {}),
@@ -626,21 +641,6 @@ class GameApp:
             for item in env_feedback.get("character_feedback", [])
             if item.get("character_id")
         }
-        for movement in director_result.get("movement", []):
-            if not isinstance(movement, dict):
-                continue
-            character_id = movement.get("character_id", "")
-            location = movement.get("location", "")
-            if not character_id or not location:
-                continue
-            update = character_updates.setdefault(
-                character_id,
-                {"emotion": "", "state_update": {}, "memory_append": ""},
-            )
-            update.setdefault("state_update", {})["location"] = {
-                "value": location,
-                "reason": movement.get("reason", ""),
-            }
         state_update = self._state_update_with_narrative_location(director_result)
         state_changes = self.state_manager.apply_state_update(
             {

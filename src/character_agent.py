@@ -27,7 +27,9 @@ class CharacterAgent:
                     user_prompt=user_prompt,
                 )
                 self._log_complete_output(character_id, raw_text)
-                return self._normalize_result(parse_character_xml(raw_text, character_id), character_context)
+                result = self._normalize_result(parse_character_xml(raw_text, character_id), character_context)
+                result["raw_text"] = raw_text
+                return result
             except Exception:
                 pass
         return self._build_fallback_response(character_id, character_context, plan_context)
@@ -114,6 +116,7 @@ class CharacterAgent:
             if not accumulated_result.get("response"):
                 parsed_result = parse_character_xml(raw_text, character_id)
                 accumulated_result["response"] = parsed_result.get("response", "")
+            accumulated_result["raw_text"] = raw_text
         result = accumulated_result
         if not raw_text:
             result = self._build_fallback_response(character_id, character_context, plan_context)
@@ -153,7 +156,7 @@ class CharacterAgent:
         yield {"event": "stage_started", "data": {"stage": "character_reflection", "character_id": character_id}}
         if not self.llm_client:
             result = self._build_fallback_reflection(character_id, character_context)
-            for index, block_name in enumerate(("emotion", "state_update", "memory_append")):
+            for index, block_name in enumerate(("emotion", "location", "state_update", "memory_append")):
                 yield {
                     "event": "block_done",
                     "data": {
@@ -177,6 +180,7 @@ class CharacterAgent:
             "name": character_context.get("state", {}).get("name", character_id),
             "response": "",
             "emotion": "",
+            "location": {},
             "state_update": {},
             "memory_append": "",
         }
@@ -205,6 +209,10 @@ class CharacterAgent:
                         block_name = parsed_event.get("block", "")
                         if block_name == "emotion":
                             accumulated_result["emotion"] = parsed or ""
+                        elif block_name == "location":
+                            accumulated_result["location"] = parsed or {}
+                            if parsed:
+                                accumulated_result.setdefault("state_update", {})["location"] = parsed
                         elif block_name == "state_update":
                             accumulated_result["state_update"] = parsed or {}
                         elif block_name == "memory_append":
@@ -234,7 +242,12 @@ class CharacterAgent:
                 parsed_result = parse_character_xml(raw_text, character_id)
                 accumulated_result["emotion"] = parsed_result.get("emotion", "")
                 accumulated_result["state_update"] = parsed_result.get("state_update", {})
+                if parsed_result.get("location"):
+                    accumulated_result["location"] = parsed_result.get("location", {})
+                    accumulated_result["state_update"]["location"] = parsed_result["location"]
                 accumulated_result["memory_append"] = parsed_result.get("memory_append", "")
+        if accumulated_result.get("location"):
+            accumulated_result.setdefault("state_update", {})["location"] = accumulated_result["location"]
         result = accumulated_result if raw_text else self._build_fallback_reflection(character_id, character_context)
         yield {
             "event": "stage_done",
@@ -269,8 +282,8 @@ class CharacterAgent:
             f"{memory_context}\n\n"
             "CONTEXT:\n"
             f"{plan_context.get('context', '')}\n\n"
-            "USER_INTENT:\n"
-            f"{plan_context.get('user_intent', '')}\n\n"
+            "PLAYER_INPUT:\n"
+            f"{self._format_prompt_value(plan_context.get('player_input', {}))}\n\n"
             "TURN_DIALOGUE:\n"
             f"{turn_dialogue}\n\n"
             "Return strict TAG format with <response> only."
@@ -295,6 +308,7 @@ class CharacterAgent:
             "stats": self._without_active_effects(state_snapshot.get("stats", {})),
             "relations": self._without_active_effects(state_snapshot.get("relations", {})),
         }
+        known_scene_ids = reflection_context.get("known_scene_ids", {})
         return (
             "PROFILE:\n"
             f"{profile_excerpt}\n\n"
@@ -308,7 +322,9 @@ class CharacterAgent:
             f"{self._format_prompt_value(raw_response)}\n\n"
             "FINAL NARRATIVE:\n"
             f"{self._format_prompt_value(final_narrative)}\n\n"
-            "Return strict TAG format with <emotion>, <state_update>, and <memory_append>."
+            "KNOWN SCENE IDS:\n"
+            f"{self._format_prompt_value(known_scene_ids)}\n\n"
+            "Return strict TAG format with <emotion>, <location>, <state_update>, and <memory_append>."
         )
 
     def _format_dialogue_state(self, state_snapshot: Any) -> str:
@@ -341,13 +357,12 @@ class CharacterAgent:
 
         relation_lines: list[str] = []
         relations = state_snapshot.get("relations", {})
-        player_relation = relations.get("player", {}) if isinstance(relations, dict) else {}
-        if isinstance(player_relation, dict):
-            effects = player_relation.get("active_effects", [])
-            if isinstance(effects, list):
-                relation_lines.extend(f"  - {str(effect).strip()}" for effect in effects if str(effect).strip())
-            elif str(effects).strip():
-                relation_lines.append(f"  - {str(effects).strip()}")
+        for metric in relations.get("player", {}).values():
+            relation_lines.extend(
+                f"  - {str(effect).strip()}"
+                for effect in metric.get("active_effects", [])
+                if str(effect).strip()
+            )
 
         possession_lines: list[str] = []
         possessions = state_snapshot.get("possessions", [])
@@ -460,9 +475,16 @@ class CharacterAgent:
             "name": state.get("name", result.get("character_id", "")),
             "response": result.get("response", ""),
             "emotion": result.get("emotion", ""),
-            "state_update": result.get("state_update", {}),
+            "state_update": self._state_update_with_location(result),
             "memory_append": result.get("memory_append", ""),
         }
+
+    def _state_update_with_location(self, result: dict[str, Any]) -> dict[str, Any]:
+        state_update = dict(result.get("state_update") or {})
+        location = result.get("location")
+        if location:
+            state_update["location"] = location
+        return state_update
 
     def _build_fallback_response(
         self,
@@ -485,6 +507,7 @@ class CharacterAgent:
             "name": character_context.get("state", {}).get("name", character_id),
             "response": "",
             "emotion": character_context.get("state", {}).get("emotion", ""),
+            "location": {},
             "state_update": {},
             "memory_append": "",
         }
