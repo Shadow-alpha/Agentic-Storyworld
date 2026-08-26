@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from "vue";
 
-defineProps({
+const props = defineProps({
   availableGames: {
     type: Array,
     default: () => [],
@@ -40,18 +40,23 @@ const emit = defineEmits([
   "reset-game",
   "save-game",
   "load-game",
+  "delete-save",
+  "rename-save",
   "relogin",
 ]);
 
 const isExpanded = ref(false);
 const activePanel = ref(null);
+const activeSessionMenu = ref("");
 
 function togglePanel(panel) {
   activePanel.value = activePanel.value === panel ? null : panel;
+  activeSessionMenu.value = "";
 }
 
 function closePanel() {
   activePanel.value = null;
+  activeSessionMenu.value = "";
 }
 
 function emitAndClose(eventName, payload) {
@@ -62,6 +67,15 @@ function emitAndClose(eventName, payload) {
 function loadSlot(slotId) {
   emit("update:loadSlotId", slotId);
   emitAndClose("load-game", slotId);
+}
+
+function toggleSessionMenu(slotId) {
+  activeSessionMenu.value = activeSessionMenu.value === slotId ? "" : slotId;
+}
+
+function emitSessionAction(eventName, slotId) {
+  activeSessionMenu.value = "";
+  emit(eventName, slotId);
 }
 </script>
 
@@ -154,18 +168,28 @@ function loadSlot(slotId) {
 
       <div v-else-if="activePanel === 'sessions'" class="tool-panel-body">
         <p v-if="!saveOptions.length" class="tool-popover-text">暂无存档会话。</p>
-        <template v-else>
-          <button
-            v-for="slot in saveOptions"
-            :key="slot.slot_id || slot"
-            type="button"
-            class="session-item"
-            @click="loadSlot(slot.slot_id || slot)"
-          >
-            <span>{{ slot.slot_id || slot }}</span>
-            <small v-if="slot.saved_at">{{ slot.saved_at }}</small>
-          </button>
-        </template>
+        <div v-else class="session-list">
+          <article v-for="slot in saveOptions" :key="slot.slot_id || slot" class="session-item">
+            <button type="button" class="session-load-button" @click="loadSlot(slot.slot_id || slot)">
+              <span>{{ slot.slot_id || slot }}</span>
+              <small v-if="slot.saved_at">{{ slot.saved_at }}</small>
+            </button>
+            <div class="session-menu-wrap">
+              <button
+                type="button"
+                class="session-menu-button"
+                title="更多操作"
+                @click.stop="toggleSessionMenu(slot.slot_id || slot)"
+              >
+                ···
+              </button>
+              <div v-if="activeSessionMenu === (slot.slot_id || slot)" class="session-menu" @click.stop>
+                <button type="button" @click="emitSessionAction('rename-save', slot.slot_id || slot)">重命名</button>
+                <button type="button" class="danger-text" @click="emitSessionAction('delete-save', slot.slot_id || slot)">删除</button>
+              </div>
+            </div>
+          </article>
+        </div>
       </div>
 
       <div v-else-if="activePanel === 'reset'" class="tool-panel-body">

@@ -146,7 +146,7 @@
   z-index: 72;
   top: 10px;
   left: calc(100% + 12px);
-  width: 280px;
+  width: 300px;
   padding: 14px;
   border-radius: 20px;
   border: 1px solid rgba(216, 204, 186, 0.95);
@@ -196,33 +196,191 @@
   background: rgba(255, 255, 255, 0.88);
 }
 
-.session-item {
-  width: 100%;
+.session-list {
   display: grid;
   gap: 4px;
-  padding: 11px 12px;
-  border-radius: 15px;
+  max-height: min(430px, 72vh);
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.session-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 4px;
+  align-items: center;
+  padding: 6px;
+  border-radius: 12px;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(216, 204, 186, 0.86);
-  text-align: left;
-  transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+  background: transparent;
+  transition: background 0.16s ease;
 }
 
 .session-item:hover {
-  transform: translateX(2px);
-  border-color: rgba(182, 92, 57, 0.38);
-  background: rgba(238, 184, 156, 0.14);
+  background: rgba(182, 92, 57, 0.08);
 }
 
-.session-item span {
+.session-load-button {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  color: inherit;
+  text-align: left;
+}
+
+.session-load-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 850;
 }
 
-.session-item small {
+.session-load-button small {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-menu-wrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.session-menu-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: rgba(107, 98, 88, 0.86);
+  opacity: 0;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: -0.12em;
+}
+
+.session-item:hover .session-menu-button,
+.session-menu-button:focus,
+.session-menu-button:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--accent);
+}
+
+.session-menu {
+  position: absolute;
+  z-index: 80;
+  top: 32px;
+  right: 0;
+  min-width: 112px;
+  padding: 6px;
+  border: 1px solid rgba(216, 204, 186, 0.92);
+  border-radius: 12px;
+  background: rgba(255, 250, 240, 0.98);
+  box-shadow: 0 16px 38px rgba(31, 26, 22, 0.16);
+}
+
+.session-menu button {
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: 9px;
+  color: var(--ink);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.session-menu button:hover {
+  background: rgba(182, 92, 57, 0.1);
+}
+
+.danger-text {
+  color: #9f3f2e;
+}
+
+.session-menu .danger-text:hover {
+  color: #9f3f2e;
+  background: rgba(159, 63, 46, 0.1);
+}
+
+.bubble-label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.turn-edit-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.turn-edit-actions button {
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: rgba(80, 58, 46, 0.82);
+  background: rgba(255, 255, 255, 0.54);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.turn-edit-actions button:hover {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.message-edit-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+  width: 100%;
+}
+
+.message-edit-box textarea {
+  width: 100%;
+  min-height: 108px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid rgba(216, 204, 186, 0.9);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.82);
+  line-height: 1.65;
+}
+
+.message-edit-box textarea:focus {
+  border-color: rgba(182, 92, 57, 0.42);
+  box-shadow: 0 0 0 3px rgba(182, 92, 57, 0.08);
+  outline: none;
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.message-edit-actions button {
+  padding: 6px 12px;
+  border-radius: 999px;
+  color: #fffaf5;
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.message-edit-actions .ghost-button {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: none;
 }
 
 .secondary-button,

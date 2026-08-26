@@ -40,8 +40,9 @@ class SlotRequest(BaseModel):
     slot_id: str
 
 
-class GoalRequest(BaseModel):
-    goal_id: str
+class RenameSlotRequest(BaseModel):
+    old_slot_id: str
+    new_slot_id: str
 
 
 class PlayerCustomizationRequest(BaseModel):
@@ -289,23 +290,46 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.post("/api/game/goals/activate")
-    async def post_goal_activate(request: GoalRequest, http_request: Request, game_id: str | None = None) -> dict[str, Any]:
+    @app.post("/api/game/save/delete")
+    async def post_game_delete_save(request: SlotRequest, http_request: Request, game_id: str | None = None) -> dict[str, Any]:
         core_app = resolve_core_app(game_id, require_user_id(http_request))
+        slot_id = request.slot_id.strip()
+        if not slot_id:
+            raise HTTPException(status_code=400, detail="slot_id must not be empty.")
         try:
-            return core_app.activate_goal(request.goal_id)
+            return core_app.delete_save(slot_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.post("/api/game/goals/deactivate")
-    async def post_goal_deactivate(request: GoalRequest, http_request: Request, game_id: str | None = None) -> dict[str, Any]:
+    @app.post("/api/game/save/rename")
+    async def post_game_rename_save(request: RenameSlotRequest, http_request: Request, game_id: str | None = None) -> dict[str, Any]:
         core_app = resolve_core_app(game_id, require_user_id(http_request))
+        old_slot_id = request.old_slot_id.strip()
+        new_slot_id = request.new_slot_id.strip()
+        if not old_slot_id or not new_slot_id:
+            raise HTTPException(status_code=400, detail="slot ids must not be empty.")
         try:
-            return core_app.deactivate_goal(request.goal_id)
+            return core_app.rename_save(old_slot_id, new_slot_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/game/turns/revert_latest")
+    async def post_revert_latest_turn(request: Request, game_id: str | None = None) -> dict[str, Any]:
+        core_app = resolve_core_app(game_id, require_user_id(request))
+        try:
+            return core_app.revert_latest_turn()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

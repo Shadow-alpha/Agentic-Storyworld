@@ -1,9 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import ControlStrip from "./components/ControlStrip.vue";
-import GoalBanner from "./components/GoalBanner.vue";
 import PlayerCustomizationForm from "./components/PlayerCustomizationForm.vue";
 import StateSidebar from "./components/StateSidebar.vue";
+import StoryPanel from "./components/StoryPanel.vue";
 import TurnTimeline from "./components/TurnTimeline.vue";
 import { apiGet, apiPost, authHeaders, getAccessToken, setAccessToken } from "./services/api";
 import { consumeSseResponse } from "./services/stream";
@@ -19,10 +19,10 @@ const appState = reactive({
   turns: [],
   currentStreamingTurn: null,
   state: {
-    user_state: {},
-    world_state: {},
+    player: {},
+    world: {},
     characters: {},
-    goals: {},
+    story: {},
   },
   selectedCharacterId: null,
 });
@@ -47,7 +47,7 @@ const inviteError = ref("");
 
 const panelTabs = [
   { id: "records", label: "记录" },
-  { id: "goals", label: "目标" },
+  { id: "story", label: "剧情" },
   { id: "characters", label: "角色" },
   { id: "world", label: "世界格局" },
 ];
@@ -77,14 +77,10 @@ const visiblePanelTabs = computed(() => {
   ];
 });
 
-const endingState = computed(() => appState.state?.goals?.ending_state || {});
+const endingState = computed(() => appState.state?.story?.ending_state || {});
 const isGameEnded = computed(() => !!endingState.value?.is_ended);
-const needsGoalChoice = computed(() => {
-  const goals = appState.state?.goals || {};
-  return !Object.keys(goals.active_goals || {}).length && !!Object.keys(goals.available_goals || {}).length;
-});
 const inputDisabled = computed(() => {
-  return isSending.value || isGameEnded.value || needsGoalChoice.value || needsPlayerCustomization.value;
+  return isSending.value || isGameEnded.value || needsPlayerCustomization.value;
 });
 
 function setConnectionStatus(text, healthy = true) {
@@ -95,10 +91,8 @@ function setConnectionStatus(text, healthy = true) {
 function createEmptyStreamState() {
   return {
     visibleNarrative: "",
-    stateUpdate: null,
     options: [],
     optionsReady: false,
-    character_feedback: [],
   };
 }
 
@@ -126,13 +120,13 @@ function createStreamingTurn(turnIndex, userInput) {
     turn_index: turnIndex,
     timestamp: "",
     user_input: userInput || {},
-    plan: { characters: [] },
-    env_feedback: { character_feedback: [], env_summary: "" },
-    director_result: {
-      narrative: { visible: "", hidden: "" },
-      goal: {},
-      goal_update: { checkpoints: [] },
-      goal_resolution: {},
+    director_plan: { player_input: {}, context: "", characters: [] },
+    characters: {},
+    director_narrative: {
+      narrative: "",
+    },
+    director_resolve: {
+      story_update: {},
       ending: {},
       interaction: { mode: "hybrid", options: [] },
       state_update: {},
@@ -170,41 +164,58 @@ function ensureStreamingTurn(turnIndex, userInput) {
   if (!appState.currentStreamingTurn || appState.currentStreamingTurn.turn_index !== turnIndex) {
     appState.currentStreamingTurn = createStreamingTurn(turnIndex, userInput, {
       characters: clonePlain(appState.state.characters),
-      user_state: clonePlain(appState.state.user_state),
-      world_state: clonePlain(appState.state.world_state),
+      player: clonePlain(appState.state.player),
+      world: clonePlain(appState.state.world),
     });
   }
   return appState.currentStreamingTurn;
 }
 
 function ensureStreamingCharacter(turn, characterId) {
-  let item = (turn.stream?.character_feedback || []).find((entry) => entry.character_id === characterId);
-  if (!item) {
-    item = {
-      character_id: characterId,
-      response: "",
-      emotion: "",
-      state_update: null,
-      memory_append: "",
+  if (!characterId) {
+    return {};
+  }
+  if (!turn.characters[characterId]) {
+    turn.characters[characterId] = {
+      id: characterId,
+      name: characterId,
+      dialogue: { response: "" },
+      reflection: {},
       streaming: true,
     };
-    turn.stream.character_feedback.push(item);
   }
-  return item;
+  return turn.characters[characterId];
+}
+
+function mergeCharacterPayload(turn, payload) {
+  Object.entries(payload || {}).forEach(([characterId, record]) => {
+    const current = ensureStreamingCharacter(turn, characterId);
+    turn.characters[characterId] = {
+      ...current,
+      ...record,
+      dialogue: record?.dialogue || current.dialogue || {},
+      reflection: record?.reflection || current.reflection || {},
+    };
+  });
 }
 
 function upsertPlannedCharacter(turn, character) {
   if (!character?.id) {
     return;
   }
-  const planned = Array.isArray(turn.plan?.characters) ? [...turn.plan.characters] : [];
+  const planned = Array.isArray(turn.director_plan?.characters) ? [...turn.director_plan.characters] : [];
   const existingIndex = planned.findIndex((item) => item?.id === character.id);
+  const cleanCharacter = {
+    id: character.id,
+    name: character.name || character.id,
+    order: character.order || 1,
+  };
   if (existingIndex >= 0) {
-    planned[existingIndex] = { ...planned[existingIndex], ...character };
+    planned[existingIndex] = { ...planned[existingIndex], ...cleanCharacter };
   } else {
-    planned.push(character);
+    planned.push(cleanCharacter);
   }
-  turn.plan.characters = planned;
+  turn.director_plan.characters = planned;
 }
 
 function handleBlockEvent(turn, eventName, data) {
@@ -217,24 +228,26 @@ function handleBlockEvent(turn, eventName, data) {
     upsertPlannedCharacter(turn, {
       id: parsed.id || data.attrs?.id || "",
       name: parsed.name || parsed.id || data.attrs?.id || "",
-      user_intent: parsed.user_intent || "",
-      context: parsed.context || "",
-      _raw: data.text || "",
+      order: parsed.order || 1,
     });
+    return;
+  }
+  if (stage === "director_plan" && eventName === "block_done" && block === "player_input") {
+    turn.director_plan.player_input = data.parsed || {};
+    return;
+  }
+  if (stage === "director_plan" && eventName === "block_done" && block === "context") {
+    turn.director_plan.context = data.parsed || data.text || "";
     return;
   }
 
   if (stage === "character") {
     turn.active_stage = "responding";
     const item = ensureStreamingCharacter(turn, data.character_id);
+    item.dialogue = item.dialogue || {};
     if (block === "response") {
-      item.response = eventName === "block_done" ? data.parsed || data.text || item.response : data.text || item.response;
-    } else if (block === "emotion") {
-      item.emotion = eventName === "block_done" ? data.parsed || data.text || item.emotion : data.text || item.emotion;
-    } else if (eventName === "block_done" && block === "state_update") {
-      item.state_update = data.parsed || {};
-    } else if (eventName === "block_done" && block === "memory_append") {
-      item.memory_append = data.parsed?.text || "";
+      item.dialogue.response =
+        eventName === "block_done" ? data.parsed || data.text || item.dialogue.response : data.text || item.dialogue.response;
     }
     return;
   }
@@ -242,68 +255,64 @@ function handleBlockEvent(turn, eventName, data) {
   if (stage === "director_narrative") {
     if (block === "narrative") {
       turn.active_stage = "narrating";
-      const text = eventName === "block_done" ? data.parsed?.visible || data.text || "" : data.display_text || data.text || "";
+      const text = eventName === "block_done" ? data.parsed || data.text || "" : data.display_text || data.text || "";
       turn.stream.visibleNarrative = text;
-      turn.director_result.narrative = { visible: text, hidden: "" };
+      turn.director_narrative.narrative = text;
     } else if (eventName === "block_done" && block === "time") {
-      turn.director_result.time = data.parsed || data.text || "";
+      turn.director_narrative.time = data.parsed || data.text || "";
     } else if (eventName === "block_done" && block === "scene") {
-      turn.director_result.scene = data.parsed || data.text || "";
+      turn.director_narrative.scene = data.parsed || data.text || "";
     } else if (eventName === "block_done" && block === "summary") {
-      turn.director_result.summary = data.parsed || data.text || "";
+      turn.director_narrative.summary = data.parsed || data.text || "";
     }
     return;
   }
 
   if (stage === "director_resolve") {
     turn.active_stage = "resolving";
-    if (eventName === "block_done" && block === "goal_update") {
-      turn.director_result.goal_update = data.parsed || { checkpoints: [] };
+    if (eventName === "block_done" && block === "story_update") {
+      turn.director_resolve.story_update = data.parsed || {};
     } else if (eventName === "block_done" && block === "state_update") {
-      turn.stream.stateUpdate = data.parsed || {};
-      turn.director_result.state_update = data.parsed || {};
+      turn.director_resolve.state_update = data.parsed || {};
     } else if (eventName === "block_done" && block === "interaction") {
       turn.stream.optionsReady = true;
       turn.active_stage = "choices";
-      turn.director_result.interaction = data.parsed || { mode: "hybrid", options: [] };
-      turn.stream.options = turn.director_result.interaction.options || [];
+      turn.director_resolve.interaction = data.parsed || { mode: "hybrid", options: [] };
+      turn.stream.options = turn.director_resolve.interaction.options || [];
     }
     return;
   }
 
   if (stage === "character_reflection") {
     const item = ensureStreamingCharacter(turn, data.character_id);
+    item.reflection = item.reflection || {};
     if (block === "emotion") {
-      item.emotion = eventName === "block_done" ? data.parsed || data.text || item.emotion : data.text || item.emotion;
+      item.reflection.emotion = eventName === "block_done" ? data.parsed || data.text || item.reflection.emotion : data.text || item.reflection.emotion;
     } else if (eventName === "block_done" && block === "location" && data.parsed?.value) {
-      item.state_update = { ...(item.state_update || {}), location: data.parsed };
+      item.reflection.location = data.parsed;
     } else if (eventName === "block_done" && block === "state_update") {
-      const location = item.state_update?.location;
-      item.state_update = data.parsed || {};
-      if (location) item.state_update.location = location;
+      item.reflection.state_update = data.parsed || {};
     } else if (eventName === "block_done" && block === "memory_append") {
-      item.memory_append = data.parsed?.text || data.parsed || "";
+      item.reflection.memory_append = data.parsed?.text || data.parsed || "";
     }
   }
 }
 
 function handleStageDone(turn, data) {
   if (data.stage === "director_plan") {
-    turn.plan = data.plan || turn.plan;
+    turn.director_plan = data.payload?.director_plan || data.plan || turn.director_plan;
   } else if (data.stage === "character") {
-    const feedback = data.character_feedback || {};
-    const item = ensureStreamingCharacter(turn, data.character_id || feedback.character_id);
-    Object.assign(item, feedback, { streaming: false });
-  } else if (data.stage === "environment") {
-    turn.env_feedback = data.env_feedback || turn.env_feedback;
+    mergeCharacterPayload(turn, data.payload?.characters || {});
+    const item = ensureStreamingCharacter(turn, data.character_id);
+    item.streaming = false;
   } else if (data.stage === "director_narrative") {
-    turn.director_result = { ...turn.director_result, ...(data.narrative_result || {}) };
+    turn.director_narrative = data.payload?.director_narrative || data.narrative_result || turn.director_narrative;
   } else if (data.stage === "director_resolve") {
-    turn.director_result = { ...turn.director_result, ...(data.resolve_result || {}) };
+    turn.director_resolve = data.payload?.director_resolve || data.resolve_result || turn.director_resolve;
   } else if (data.stage === "character_reflection") {
-    const reflection = data.character_reflection || {};
-    const item = ensureStreamingCharacter(turn, data.character_id || reflection.character_id);
-    Object.assign(item, reflection, { streaming: false });
+    mergeCharacterPayload(turn, data.payload?.characters || {});
+    const item = ensureStreamingCharacter(turn, data.character_id);
+    item.streaming = false;
   }
 }
 
@@ -333,23 +342,7 @@ function handleStreamEvent(eventName, data) {
   } else if (eventName === "stage_done") {
     handleStageDone(turn, data);
   } else if (eventName === "turn_completed") {
-    const streamingTurn = appState.currentStreamingTurn;
     hydrateFromPayload(data.payload);
-    const loggedTurn = data.payload?.ui?.turns?.[data.payload.ui.turns.length - 1] || {};
-    const latestTurn = {
-      turn_index: data.turn_index,
-      timestamp: loggedTurn.timestamp || "",
-      user_input: loggedTurn.user_input || streamingTurn?.user_input || {},
-      plan: loggedTurn.plan || streamingTurn?.plan || { characters: [] },
-      env_feedback: loggedTurn.env_feedback || streamingTurn?.env_feedback || { character_feedback: [], env_summary: "" },
-      director_result: loggedTurn.director_result || streamingTurn?.director_result || {},
-      stream: streamingTurn?.stream || createEmptyStreamState(),
-      is_streaming: false,
-      active_stage: null,
-    };
-    if (Array.isArray(appState.turns) && appState.turns.length) {
-      appState.turns = [...appState.turns.slice(0, -1), latestTurn];
-    }
   }
 }
 
@@ -537,6 +530,71 @@ async function onLoadGame(slotId = null) {
   }
 }
 
+async function onDeleteSave(slotId) {
+  const targetSlotId = String(slotId || loadSlotId.value || "").trim();
+  if (!targetSlotId) {
+    window.alert("请先选择要删除的存档。");
+    return;
+  }
+  if (!window.confirm(`确定删除存档「${targetSlotId}」吗？`)) {
+    return;
+  }
+  try {
+    setConnectionStatus("Deleting Save...", true);
+    const payload = await apiPost("/api/game/save/delete", { slot_id: targetSlotId }, appState.gameId);
+    if (loadSlotId.value === targetSlotId) {
+      loadSlotId.value = "";
+    }
+    hydrateFromPayload(payload);
+    setConnectionStatus("Connected", true);
+  } catch (error) {
+    setConnectionStatus("Error", false);
+    window.alert(error.message);
+  }
+}
+
+async function onRenameSave(slotId) {
+  const oldSlotId = String(slotId || loadSlotId.value || "").trim();
+  if (!oldSlotId) {
+    window.alert("请先选择要重命名的存档。");
+    return;
+  }
+  const newSlotId = window.prompt("输入新的存档名：", oldSlotId);
+  if (!newSlotId || newSlotId.trim() === oldSlotId) {
+    return;
+  }
+  try {
+    setConnectionStatus("Renaming Save...", true);
+    const payload = await apiPost(
+      "/api/game/save/rename",
+      { old_slot_id: oldSlotId, new_slot_id: newSlotId.trim() },
+      appState.gameId,
+    );
+    loadSlotId.value = newSlotId.trim();
+    hydrateFromPayload(payload);
+    setConnectionStatus("Connected", true);
+  } catch (error) {
+    setConnectionStatus("Error", false);
+    window.alert(error.message);
+  }
+}
+
+async function onSubmitEditedLatestTurn(rawText) {
+  const nextText = String(rawText || "").trim();
+  if (!nextText || !appState.turns.length || isSending.value) {
+    return;
+  }
+  try {
+    setConnectionStatus("Regenerating...", true);
+    const payload = await apiPost("/api/game/turns/revert_latest", {}, appState.gameId);
+    hydrateFromPayload(payload);
+    await sendMessage(buildInputPayload(nextText));
+  } catch (error) {
+    setConnectionStatus("Error", false);
+    window.alert(error.message);
+  }
+}
+
 function onRelogin() {
   setAccessToken("");
   accessToken.value = "";
@@ -560,30 +618,6 @@ async function onSwitchGame() {
   window.history.replaceState({}, "", url);
   try {
     await loadInitialState();
-  } catch (error) {
-    setConnectionStatus("Error", false);
-    window.alert(error.message);
-  }
-}
-
-async function onActivateGoal(goalId) {
-  try {
-    setConnectionStatus("Updating Goal...", true);
-    const payload = await apiPost("/api/game/goals/activate", { goal_id: goalId }, appState.gameId);
-    hydrateFromPayload(payload);
-    setConnectionStatus("Connected", true);
-  } catch (error) {
-    setConnectionStatus("Error", false);
-    window.alert(error.message);
-  }
-}
-
-async function onDeactivateGoal(goalId) {
-  try {
-    setConnectionStatus("Updating Goal...", true);
-    const payload = await apiPost("/api/game/goals/deactivate", { goal_id: goalId }, appState.gameId);
-    hydrateFromPayload(payload);
-    setConnectionStatus("Connected", true);
   } catch (error) {
     setConnectionStatus("Error", false);
     window.alert(error.message);
@@ -652,6 +686,8 @@ onMounted(async () => {
           @reset-game="onResetGame"
           @save-game="onSaveGame"
           @load-game="onLoadGame"
+          @delete-save="onDeleteSave"
+          @rename-save="onRenameSave"
           @relogin="onRelogin"
         />
       </aside>
@@ -686,14 +722,12 @@ onMounted(async () => {
               :state="appState.state"
               :interactive="!inputDisabled"
               @pick-option="onPickChoice"
+              @submit-edit-latest-turn="onSubmitEditedLatestTurn"
             />
 
-            <GoalBanner
-              v-else-if="activePanel === 'goals'"
-              :goals-config="appState.state.goals"
-              :streaming-turn="appState.currentStreamingTurn"
-              @activate-goal="onActivateGoal"
-              @deactivate-goal="onDeactivateGoal"
+            <StoryPanel
+              v-else-if="activePanel === 'story'"
+              :story="appState.state.story"
             />
 
             <StateSidebar
@@ -717,7 +751,7 @@ onMounted(async () => {
             />
             <div class="chat-actions">
               <button type="submit" :disabled="inputDisabled">
-                {{ isGameEnded ? "已达成结局" : needsGoalChoice ? "请先选择目标" : isSending ? "生成中..." : "发送" }}
+                {{ isGameEnded ? "已达成结局" : isSending ? "生成中..." : "发送" }}
               </button>
             </div>
           </form>

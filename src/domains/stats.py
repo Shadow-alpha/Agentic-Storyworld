@@ -11,8 +11,8 @@ class StatsDomain:
     update_key = "stats"
 
     def get_agent_view(self, state_view: dict[str, Any], context: DomainContext) -> dict[str, Any]:
-        user_state = state_view.get("user_state", {})
-        user_state["stats"] = self._compact(user_state.get("stats", {}), context.config.get("stat_rules", {}), context)
+        player = state_view.get("player", {})
+        player["stats"] = self._compact(player.get("stats", {}), context.config.get("stat_rules", {}), context)
         for character in state_view.get("characters", {}).values():
             character_state = character.get("state", {})
             character_state["stats"] = self._compact(
@@ -22,17 +22,51 @@ class StatsDomain:
             )
         return state_view
 
-    def apply_update(
+    def apply_update(self, runtime_state: dict[str, Any], turn_record: dict[str, Any], context: DomainContext) -> dict[str, Any]:
+        changes: dict[str, Any] = {"world": {}, "player": {}, "characters": {}}
+        state_update = turn_record.get("director_resolve", {}).get("state_update", {})
+        if isinstance(state_update, dict):
+            changes["world"] = self._apply_state_stats(
+                runtime_state.setdefault("world", {}),
+                state_update.get("world", {}),
+                context,
+                ("stats",),
+            )
+            changes["player"] = self._apply_state_stats(
+                runtime_state.setdefault("player", {}),
+                state_update.get("player", {}),
+                context,
+                ("stats",),
+            )
+
+        runtime_characters = runtime_state.setdefault("characters", {})
+        for character_id, character_record in (turn_record.get("characters") or {}).items():
+            reflection = character_record.get("reflection", {}) if isinstance(character_record, dict) else {}
+            update = reflection.get("state_update", {}) if isinstance(reflection, dict) else {}
+            runtime_character = runtime_characters.get(character_id, {})
+            if isinstance(runtime_character, dict):
+                state = runtime_character.setdefault("state", {})
+                character_changes = self._apply_state_stats(state, update, context, ("stats",))
+                if character_changes:
+                    changes["characters"].setdefault(character_id, {}).update(character_changes)
+        return {key: value for key, value in changes.items() if value}
+
+    def _apply_state_stats(
         self,
         target_state: dict[str, Any],
         update: Any,
         context: DomainContext,
-        path: tuple[str, ...] = ("stats",),
+        path: tuple[str, ...],
     ) -> dict[str, Any]:
-        if not isinstance(update, dict) or not update:
+        if not isinstance(target_state, dict) or not isinstance(update, dict):
             return {}
-        rules = context.config.get("stat_rules", {})
-        return self._apply_metric_group(target_state.setdefault("stats", {}), update, rules, context, path)
+        stats = target_state.get("stats", {})
+        if not isinstance(stats, dict):
+            return {}
+        update = update.get("stats", update)
+        if not isinstance(update, dict):
+            return {}
+        return self._apply_metric_group(stats, update, context.config.get("stat_rules", {}), context, path)
 
     def _compact(self, values: Any, rules: Any, context: DomainContext) -> dict[str, Any]:
         if not isinstance(values, dict) or not isinstance(rules, dict):

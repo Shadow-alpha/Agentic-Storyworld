@@ -14,9 +14,9 @@ class EnvironmentLayer:
 
     def run(self, characters: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, Any]:
         feedback_items = []
-        turn_dialogue: list[dict[str, str]] = []
+        turn_dialogue: list[dict[str, Any]] = []
         for group in self.grouped_characters(characters):
-            group_entries: list[dict[str, str]] = []
+            group_entries: list[dict[str, Any]] = []
             for character in group:
                 feedback = self.run_character(character, state, turn_dialogue)
                 feedback_items.append(feedback)
@@ -28,7 +28,7 @@ class EnvironmentLayer:
         self,
         character: dict[str, Any],
         state: dict[str, Any],
-        turn_dialogue: list[dict[str, str]] | None = None,
+        turn_dialogue: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         character_id = character.get("id")
         if not character_id:
@@ -39,19 +39,21 @@ class EnvironmentLayer:
                 "memory_append": "",
             }
         plan_context = {**character, "turn_dialogue": list(turn_dialogue or [])}
-        result = self.character_agent.act(character_id, plan_context, state)
+        part = self.character_agent.act(character_id, plan_context, state)
+        result = self._dialogue_feedback_from_part(part, character_id)
         character_state = state.get("characters", {}).get(character_id, {}).get("state", {})
         result["name"] = character_state.get("name", character_id)
         result["order"] = character.get("order", 1)
         result["raw_response"] = result.get("response", "")
         result["visible_dialogue"] = self.visible_dialogue(result.get("response", ""))
+        result["turn_part"] = part
         return result
 
     def stream_character(
         self,
         character: dict[str, Any],
         state: dict[str, Any],
-        turn_dialogue: list[dict[str, str]] | None = None,
+        turn_dialogue: list[dict[str, Any]] | None = None,
     ):
         character_id = character.get("id")
         if not character_id:
@@ -72,7 +74,7 @@ class EnvironmentLayer:
                 {
                     key: value
                     for key, value in feedback.items()
-                    if key not in {"raw_response", "visible_dialogue"}
+                    if key not in {"raw_response", "visible_dialogue", "turn_part"}
                 }
             )
         return {
@@ -101,12 +103,26 @@ class EnvironmentLayer:
             groups[-1].append(character)
         return groups
 
-    def dialogue_entry(self, feedback: dict[str, Any]) -> dict[str, str]:
+    def dialogue_entry(self, feedback: dict[str, Any]) -> dict[str, Any]:
         raw_response = str(feedback.get("raw_response") or feedback.get("response") or "")
-        return {
+        entry = {
             "character_id": str(feedback.get("character_id", "")),
             "raw_response": raw_response,
             "visible_dialogue": str(feedback.get("visible_dialogue") or self.visible_dialogue(raw_response)),
+        }
+        if feedback.get("audience"):
+            entry["audience"] = feedback["audience"]
+        return entry
+
+    def _dialogue_feedback_from_part(self, part: dict[str, Any], character_id: str) -> dict[str, Any]:
+        character = (part.get("characters", {}) if isinstance(part, dict) else {}).get(character_id, {})
+        dialogue = character.get("dialogue", {}) if isinstance(character, dict) else {}
+        return {
+            "character_id": character_id,
+            "name": character.get("name", character_id) if isinstance(character, dict) else character_id,
+            "response": dialogue.get("response", "") if isinstance(dialogue, dict) else "",
+            "audience": dialogue.get("audience", []) if isinstance(dialogue, dict) else [],
+            "raw_text": dialogue.get("raw_text", "") if isinstance(dialogue, dict) else "",
         }
 
     def visible_dialogue(self, raw_response: str) -> str:

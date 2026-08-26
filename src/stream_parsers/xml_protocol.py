@@ -91,14 +91,24 @@ def first_block_parsed(blocks: dict[str, Any], name: str, default: Any = None) -
     return items[0].get("parsed", default)
 
 
+def first_block_record(blocks: dict[str, Any], name: str) -> dict[str, Any]:
+    items = blocks.get("by_name", {}).get(name.lower(), [])
+    return items[0] if items else {}
+
+
 def parse_plan_xml(text: str) -> dict[str, Any]:
     characters = []
     cleaned = _prepare_protocol_text(text)
     player_input_block = _extract_complete_block(cleaned, "player_input") or ""
+    speech_block = _extract_complete_block(player_input_block, "speech") or ""
+    speech: dict[str, Any] = {"text": _extract_tag_inner_text(speech_block or player_input_block, "speech")}
+    audience = _csv_attribute(speech_block, "speech", "audience")
+    if audience:
+        speech["audience"] = audience
     player_input = {
         "intent": _extract_tag_inner_text(player_input_block, "intent"),
         "action": _extract_tag_inner_text(player_input_block, "action"),
-        "speech": _extract_tag_inner_text(player_input_block, "speech"),
+        "speech": speech,
     }
     for block in _extract_plan_character_blocks(cleaned):
         character = parse_plan_character_block(block)
@@ -109,6 +119,8 @@ def parse_plan_xml(text: str) -> dict[str, Any]:
     return {
         "player_input": player_input,
         "context": _extract_tag_inner_text(cleaned, "context"),
+        "story_guidance": _extract_tag_inner_text(cleaned, "story_guidance")
+        or _extract_unclosed_tag_text(cleaned, "story_guidance"),
         "characters": characters,
         "director_meta": {},
     }
@@ -116,7 +128,7 @@ def parse_plan_xml(text: str) -> dict[str, Any]:
 
 def _extract_plan_character_blocks(text: str) -> list[str]:
     pattern = re.compile(
-        r"<character\b[^>]*/\s*>",
+        r"<character\b[^>]*>.*?</character\s*>|<character\b[^>]*/\s*>",
         flags=re.IGNORECASE | re.DOTALL,
     )
     return [match.group(0) for match in pattern.finditer(text)]
@@ -131,19 +143,27 @@ def parse_plan_character_block(xml_text: str) -> dict[str, Any]:
     return {
         "id": _extract_attribute(xml_text, "character", "id").strip(),
         "order": order,
+        "private_context": _extract_tag_inner_text(xml_text, "character"),
     }
 
 
 def parse_character_xml(text: str, character_id: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
     blocks = parse_protocol_blocks(cleaned, block_parsers("character"))
+    response_record = first_block_record(blocks, "response")
     memory = first_block_parsed(blocks, "memory_append", {}) or {}
+    location = first_block_parsed(blocks, "location", {}) or {}
+    state_update = first_block_parsed(blocks, "state_update", {}) or {}
+    if location:
+        state_update = dict(state_update)
+        state_update["location"] = location
     return {
         "character_id": character_id,
         "response": first_block_parsed(blocks, "response", "") or _extract_unclosed_tag_text(cleaned, "response"),
+        "audience": _audience_from_record(response_record),
         "emotion": first_block_parsed(blocks, "emotion", "") or "",
-        "location": first_block_parsed(blocks, "location", {}) or {},
-        "state_update": first_block_parsed(blocks, "state_update", {}) or {},
+        "location": location,
+        "state_update": state_update,
         "memory_append": memory.get("text", "") if isinstance(memory, dict) else "",
     }
 
@@ -152,21 +172,12 @@ def parse_integrate_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
     blocks = parse_protocol_blocks(cleaned, block_parsers("integrate"))
     narrative = first_block_parsed(blocks, "narrative", {"visible": "", "hidden": ""})
-    summary = first_block_parsed(blocks, "summary", "") or ""
-    goal = first_block_parsed(blocks, "goal", {}) or {}
-    goal_update = first_block_parsed(blocks, "goal_update", {"checkpoints": []}) or {"checkpoints": []}
-    state_update = first_block_parsed(blocks, "state_update", {"world_state": {}, "user_state": {}})
+    summary = first_block_parsed(blocks, "summary", "") or _extract_unclosed_tag_text(cleaned, "summary")
+    state_update = first_block_parsed(blocks, "state_update", {"world": {}, "player": {}})
     interaction = first_block_parsed(blocks, "interaction", {"mode": "hybrid", "options": []})
     return {
         "narrative": narrative,
         "summary": summary,
-        "goal": {
-            "current_goal": goal.get("current_goal", ""),
-            "status": goal.get("status", "in_progress"),
-            "progress": goal.get("progress", 0),
-            "notes": goal.get("notes", ""),
-        },
-        "goal_update": goal_update,
         "interaction": interaction,
         "state_update": state_update,
     }
@@ -175,12 +186,18 @@ def parse_integrate_xml(text: str) -> dict[str, Any]:
 def parse_narrative_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
     blocks = parse_protocol_blocks(cleaned, block_parsers("narrative"))
+    narrative = first_block_parsed(blocks, "narrative", "") or _extract_unclosed_block_before(
+        cleaned,
+        "narrative",
+        ["hidden", "summary"],
+    )
+    hidden = first_block_parsed(blocks, "hidden", {}) or {}
     return {
         "time": first_block_parsed(blocks, "time", "") or "",
         "scene": first_block_parsed(blocks, "scene", "") or "",
-        "narrative": first_block_parsed(blocks, "narrative", {"visible": "", "hidden": ""})
-        or {"visible": "", "hidden": ""},
-        "summary": first_block_parsed(blocks, "summary", "") or "",
+        "narrative": narrative,
+        "hidden": hidden,
+        "summary": first_block_parsed(blocks, "summary", "") or _extract_unclosed_tag_text(cleaned, "summary"),
     }
 
 
@@ -188,8 +205,8 @@ def parse_resolve_xml(text: str) -> dict[str, Any]:
     cleaned = _prepare_protocol_text(text)
     blocks = parse_protocol_blocks(cleaned, block_parsers("resolve"))
     return {
-        "state_update": first_block_parsed(blocks, "state_update", {"world_state": {}, "user_state": {}}),
-        "goal_update": first_block_parsed(blocks, "goal_update", {"checkpoints": []}) or {"checkpoints": []},
+        "state_update": first_block_parsed(blocks, "state_update", {"world": {}, "player": {}}),
+        "story_update": first_block_parsed(blocks, "story_update", {}) or {},
         "interaction": first_block_parsed(blocks, "interaction", {"mode": "hybrid", "options": []}),
     }
 
@@ -211,11 +228,26 @@ def parse_scene_block(xml_text: str) -> dict[str, str]:
     }
 
 
-def parse_narrative_block(xml_text: str) -> dict[str, Any]:
-    inner_text = _extract_tag_inner_text(xml_text, "narrative") if xml_text.strip() else ""
+def parse_time_block(xml_text: str) -> dict[str, Any]:
+    elapsed = _extract_attribute(xml_text, "time", "elapsed_minutes").strip()
+    try:
+        elapsed_minutes = max(0, int(elapsed or 0))
+    except ValueError:
+        elapsed_minutes = 0
     return {
-        "visible": inner_text,
-        "hidden": "",
+        "value": _extract_tag_inner_text(xml_text, "time"),
+        "elapsed_minutes": elapsed_minutes,
+    }
+
+
+def parse_narrative_block(xml_text: str) -> str:
+    return _extract_tag_inner_text(xml_text, "narrative") if xml_text.strip() else ""
+
+
+def parse_hidden_block(xml_text: str) -> dict[str, str]:
+    return {
+        "scene_id": _extract_attribute(xml_text, "hidden", "scene_id").strip(),
+        "text": _extract_tag_inner_text(xml_text, "hidden"),
     }
 
 
@@ -231,36 +263,21 @@ def parse_location_block(xml_text: str) -> dict[str, str]:
     }
 
 
-def parse_goal_block(xml_text: str) -> dict[str, Any]:
-    if not xml_text.strip():
-        return {}
-    return parse_kv_block(_extract_tag_inner_text(xml_text, "goal"))
-
-
 def parse_text_block(xml_text: str) -> str:
     tag_name = _extract_start_tag_name(xml_text)
     return _extract_tag_inner_text(xml_text, tag_name) if tag_name else node_text(parse_xml_fragment(xml_text))
 
 
-def parse_goal_update_block(xml_text: str) -> dict[str, Any]:
-    if not xml_text.strip():
-        return {"checkpoints": []}
-    checkpoints = []
-    for block in _extract_all_complete_blocks(xml_text, "checkpoint"):
-        goal_id = _extract_attribute(block, "checkpoint", "goal_id").strip()
-        checkpoint_id = _extract_attribute(block, "checkpoint", "checkpoint_id").strip()
-        status = (_extract_attribute(block, "checkpoint", "status") or "in_progress").strip().lower()
-        if not goal_id or not checkpoint_id:
-            continue
-        progress_note = _extract_tag_inner_text(block, "checkpoint")
-        item = {
-            "goal_id": goal_id,
-            "checkpoint_id": checkpoint_id,
-            "status": status,
-            "progress_note": progress_note,
-        }
-        checkpoints.append(item)
-    return {"checkpoints": checkpoints}
+def parse_story_update_block(xml_text: str) -> dict[str, Any]:
+    status = str(_extract_attribute(xml_text, "story_update", "status") or "in_progress").strip().lower()
+    inner_text = _extract_tag_inner_text(xml_text, "story_update") or _extract_unclosed_tag_text(xml_text, "story_update")
+    fields = parse_kv_block(inner_text)
+    return {
+        "status": status if status in {"unstarted", "in_progress", "completed"} else "in_progress",
+        "text": str(fields.get("evidence", "") or fields.get("text", "") or inner_text).strip(),
+        "event_progress": str(fields.get("event_progress", "") or "").strip(),
+        "next_needed": str(fields.get("next_needed", "") or "").strip(),
+    }
 
 
 def parse_interaction_block(xml_text: str) -> dict[str, Any]:
@@ -274,64 +291,60 @@ def parse_interaction_block(xml_text: str) -> dict[str, Any]:
 
 def parse_state_update_block(xml_text: str) -> dict[str, Any]:
     if not xml_text.strip():
-        return {"world_state": {}, "user_state": {}}
+        return {"world": {}, "player": {}}
     inner_text = _extract_tag_inner_text(xml_text, "state_update")
     if not inner_text:
-        return {"world_state": {}, "user_state": {}}
-    world_block = _extract_complete_block(inner_text, "world_state")
-    user_block = _extract_complete_block(inner_text, "user_state")
-    if world_block is not None or user_block is not None:
+        return {"world": {}, "player": {}}
+    world_block = _extract_complete_block(inner_text, "world")
+    player_block = _extract_complete_block(inner_text, "player")
+    if world_block is not None or player_block is not None:
         return {
-            "world_state": parse_kv_block(
+            "world": parse_kv_block(
                 "\n".join(
                     _strip_surrounding_angle_brackets(line)
-                    for line in _repair_pseudo_kv_xml(_extract_tag_inner_text(world_block or "", "world_state")).splitlines()
+                    for line in _repair_pseudo_kv_xml(_extract_tag_inner_text(world_block or "", "world")).splitlines()
                 ),
                 parse_reasons=True,
             ),
-            "user_state": parse_kv_block(
+            "player": parse_kv_block(
                 "\n".join(
                     _strip_surrounding_angle_brackets(line)
-                    for line in _repair_pseudo_kv_xml(_extract_tag_inner_text(user_block or "", "user_state")).splitlines()
+                    for line in _repair_pseudo_kv_xml(_extract_tag_inner_text(player_block or "", "player")).splitlines()
                 ),
                 parse_reasons=True,
             ),
         }
     lines = _repair_pseudo_kv_xml(inner_text)
     world_lines: list[str] = []
-    user_lines: list[str] = []
+    player_lines: list[str] = []
     current_section: str | None = None
     for raw_line in lines.splitlines():
         line = raw_line.rstrip()
         stripped = line.strip()
         if not stripped:
             continue
-        section_match = re.match(r"^</?(world_state|user_state)\s*>?$", stripped)
+        section_match = re.match(r"^</?(world|player)\s*>?$", stripped)
         if section_match:
             current_section = section_match.group(1) if not stripped.startswith("</") else None
             continue
         if stripped.startswith("<") and stripped.endswith(">") and not ":" in stripped:
             continue
         repaired = _strip_surrounding_angle_brackets(line)
-        if current_section == "world_state":
+        if current_section == "world":
             world_lines.append(repaired)
-        elif current_section == "user_state":
-            user_lines.append(repaired)
+        elif current_section == "player":
+            player_lines.append(repaired)
         else:
             stripped_repaired = repaired.lstrip()
             if stripped_repaired.startswith("player."):
-                user_lines.append(f"stats.{stripped_repaired[len('player.'):]}")
+                player_lines.append(f"stats.{stripped_repaired[len('player.'):]}")
             elif stripped_repaired.startswith("world."):
                 world_lines.append(f"stats.{stripped_repaired[len('world.'):]}")
-            elif stripped_repaired.startswith("user_state."):
-                user_lines.append(stripped_repaired[len("user_state.") :])
-            elif stripped_repaired.startswith("world_state."):
-                world_lines.append(stripped_repaired[len("world_state.") :])
             else:
                 world_lines.append(repaired)
     return {
-        "world_state": parse_kv_block("\n".join(world_lines), parse_reasons=True),
-        "user_state": parse_kv_block("\n".join(user_lines), parse_reasons=True),
+        "world": parse_kv_block("\n".join(world_lines), parse_reasons=True),
+        "player": parse_kv_block("\n".join(player_lines), parse_reasons=True),
     }
 
 
@@ -379,20 +392,19 @@ def block_parsers(stage: str) -> dict[str, Any]:
         "integrate": {
             "narrative": parse_narrative_block,
             "summary": parse_text_block,
-            "goal": parse_goal_block,
-            "goal_update": parse_goal_update_block,
             "state_update": parse_state_update_block,
             "interaction": parse_interaction_block,
         },
         "narrative": {
-            "time": parse_text_block,
+            "time": parse_time_block,
             "scene": parse_scene_block,
             "narrative": parse_narrative_block,
+            "hidden": parse_hidden_block,
             "summary": parse_text_block,
         },
         "resolve": {
             "state_update": parse_state_update_block,
-            "goal_update": parse_goal_update_block,
+            "story_update": parse_story_update_block,
             "interaction": parse_interaction_block,
         },
         "ending": {"ending_narrative": parse_text_block},
@@ -560,7 +572,11 @@ class PlanStreamParser:
         if body_text is None:
             return events
         while True:
-            match = re.search(r"<character\b[^>]*/\s*>", body_text[self.scan_pos :], flags=re.IGNORECASE | re.DOTALL)
+            match = re.search(
+                r"<character\b[^>]*>.*?</character\s*>|<character\b[^>]*/\s*>",
+                body_text[self.scan_pos :],
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             if not match:
                 break
             open_end = self.scan_pos + match.end()
@@ -799,6 +815,16 @@ def _extract_unclosed_tag_text(text: str, tag_name: str) -> str:
     return tail[: next_tag.start()].strip() if next_tag else tail.strip()
 
 
+def _extract_unclosed_block_before(text: str, tag_name: str, stop_names: list[str]) -> str:
+    match = re.search(fr"<{tag_name}\b[^>]*>", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    tail = text[match.end() :]
+    stop_pattern = "|".join(re.escape(name) for name in stop_names)
+    stop = re.search(fr"</?({stop_pattern})\b[^>]*>", tail, flags=re.IGNORECASE | re.DOTALL)
+    return tail[: stop.start()].strip() if stop else tail.strip()
+
+
 def _extract_start_tag(text: str) -> str:
     match = re.search(r"<[A-Za-z_][\w.-]*\b[^>]*>", text, flags=re.IGNORECASE | re.DOTALL)
     return match.group(0) if match else ""
@@ -814,6 +840,17 @@ def _extract_attribute(text: str, tag_name: str, attribute_name: str) -> str:
     if not start_tag:
         return ""
     return _extract_attribute_from_start_tag(start_tag.group(0), attribute_name)
+
+
+def _csv_attribute(text: str, tag_name: str, attribute_name: str) -> list[str]:
+    raw_value = _extract_attribute(text, tag_name, attribute_name)
+    return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
+def _audience_from_record(record: dict[str, Any]) -> list[str]:
+    attrs = record.get("attrs", {}) if isinstance(record, dict) else {}
+    raw_value = attrs.get("audience", "") if isinstance(attrs, dict) else ""
+    return [part.strip() for part in str(raw_value).split(",") if part.strip()]
 
 
 def _extract_attribute_from_start_tag(start_tag: str, attribute_name: str) -> str:

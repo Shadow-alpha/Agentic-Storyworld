@@ -25,7 +25,7 @@ const props = defineProps({
   },
 });
 
-defineEmits(["pick-option"]);
+defineEmits(["pick-option", "submit-edit-latest-turn"]);
 
 const listRef = ref(null);
 
@@ -45,7 +45,7 @@ watch(
     props.turns.length,
     props.turns.at(-1)?.is_streaming,
     props.turns.at(-1)?.stream?.visibleNarrative,
-    props.turns.at(-1)?.director_result?.narrative?.visible,
+    props.turns.at(-1)?.director_narrative?.narrative,
   ],
   scrollToBottom,
   { immediate: true }
@@ -71,6 +71,7 @@ watch(
       :stat-rules="statRules"
       :state="state"
       @pick-option="$emit('pick-option', $event)"
+      @submit-edit-latest-turn="$emit('submit-edit-latest-turn', $event)"
     />
   </div>
 </template>

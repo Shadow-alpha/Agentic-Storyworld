@@ -5,8 +5,8 @@ const props = defineProps({
   state: {
     type: Object,
     default: () => ({
-      user_state: {},
-      world_state: {},
+      player: {},
+      world: {},
       characters: {},
     }),
   },
@@ -43,15 +43,15 @@ const selectedCharacter = computed(() => {
   return props.state?.characters?.[props.selectedCharacterId] || null;
 });
 const selectedCharacterId = computed(() => props.selectedCharacterId || "");
-const mapLocations = computed(() => props.state?.world_state?.map_locations || {});
+const mapLocations = computed(() => props.state?.world?.map_locations || {});
 const statRules = computed(() => props.state?.stat_rules || props.state?.config?.stat_rules || {});
 const relationRules = computed(() => props.state?.relation_rules || props.state?.config?.relation_rules || {});
-const currentLocationInfo = computed(() => mapLocations.value?.[props.state?.user_state?.location] || null);
-const organizationEntries = computed(() => Object.entries(props.state?.world_state?.organizations || {}));
+const currentLocationInfo = computed(() => mapLocations.value?.[props.state?.player?.location] || null);
+const organizationEntries = computed(() => Object.entries(props.state?.world?.organizations || {}));
 const showPlayer = computed(() => props.panel === "all" || props.panel === "characters");
 const showCharacters = computed(() => props.panel === "all" || props.panel === "characters");
 const showWorld = computed(() => props.panel === "all" || props.panel === "world");
-const playerProfile = computed(() => props.state?.player_profile || props.state?.user_state?.player_profile || "");
+const playerProfile = computed(() => props.state?.player_profile || props.state?.player?.player_profile || "");
 
 function statEntries(stats) {
   return Object.entries(stats || {});
@@ -208,11 +208,11 @@ function markCharacterImageFailed(characterId) {
       <div class="meta-list">
         <div class="meta-row">
           <span class="meta-label">位置</span>
-          <span class="meta-value">{{ locationName(state.user_state?.location) }}</span>
+          <span class="meta-value">{{ locationName(state.player?.location) }}</span>
         </div>
       </div>
-      <div v-if="statEntries(state.user_state?.stats).length" class="state-bar-list compact-state-bars">
-        <div v-for="[statKey, statValue] in statEntries(state.user_state?.stats)" :key="statKey" class="state-bar-row">
+      <div v-if="statEntries(state.player?.stats).length" class="state-bar-list compact-state-bars">
+        <div v-for="[statKey, statValue] in statEntries(state.player?.stats)" :key="statKey" class="state-bar-row">
           <div class="state-bar-meta">
             <span>{{ statLabel(statKey) }}</span>
             <span>{{ valueOf(statValue) }} / {{ rangeText(statRule(statKey)) }}</span>
@@ -231,15 +231,15 @@ function markCharacterImageFailed(characterId) {
       <div class="meta-list">
         <div class="meta-row">
           <span class="meta-label">时间</span>
-          <span class="meta-value">{{ state.world_state?.time || "未知" }}</span>
+          <span class="meta-value">{{ state.world?.time || "未知" }}</span>
         </div>
         <div class="meta-row">
           <span class="meta-label">天气</span>
-          <span class="meta-value">{{ state.world_state?.weather || "未知" }}</span>
+          <span class="meta-value">{{ state.world?.weather || "未知" }}</span>
         </div>
       </div>
-      <div v-if="statEntries(state.world_state?.stats).length" class="state-bar-list compact-state-bars">
-        <div v-for="[statKey, statValue] in statEntries(state.world_state?.stats)" :key="statKey" class="state-bar-row">
+      <div v-if="statEntries(state.world?.stats).length" class="state-bar-list compact-state-bars">
+        <div v-for="[statKey, statValue] in statEntries(state.world?.stats)" :key="statKey" class="state-bar-row">
           <div class="state-bar-meta">
             <span>{{ statLabel(statKey) }}</span>
             <span>{{ valueOf(statValue) }} / {{ rangeText(statRule(statKey)) }}</span>
@@ -337,7 +337,7 @@ function markCharacterImageFailed(characterId) {
 
         <div v-else-if="activeDetailType === 'world'" class="meta-list">
           <div
-            v-for="[fieldKey, fieldValue] in fieldEntries(state.world_state, ['map_locations', 'role'])"
+            v-for="[fieldKey, fieldValue] in fieldEntries(state.world, ['map_locations', 'role'])"
             :key="fieldKey"
             class="meta-row"
           >

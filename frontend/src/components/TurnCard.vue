@@ -26,8 +26,10 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["pick-option"]);
+const emit = defineEmits(["pick-option", "submit-edit-latest-turn"]);
 const isOpen = ref(props.openByDefault || props.turn.is_streaming);
+const isEditingInput = ref(false);
+const editInputText = ref("");
 
 watch(
   () => [props.openByDefault, props.turn.is_streaming],
@@ -39,9 +41,10 @@ watch(
 );
 
 const userText = computed(() => formatUserInput(props.turn.user_input) || "系统推进了一轮剧情。");
+const canModifyTurn = computed(() => props.interactive && !props.turn.is_streaming);
 const narrativeText = computed(() => {
   return (
-    formatNarrative(props.turn.director_result || {}) ||
+    formatNarrative(directorResult.value || {}) ||
     props.turn.stream?.visibleNarrative ||
     (props.turn.is_streaming ? "故事正在展开..." : "本轮没有可见叙事。")
   );
@@ -55,18 +58,28 @@ const previewText = computed(() => {
   return compact.length > 72 ? `${compact.slice(0, 72)}...` : compact;
 });
 
-const plan = computed(() => props.turn.plan || {});
-const planPlayerInput = computed(() => props.turn.plan?.player_input || {});
-const interactionOptions = computed(() => ensureArray(props.turn.director_result?.interaction?.options));
-const goalResolution = computed(() => props.turn.director_result?.goal_resolution || {});
-const completedGoals = computed(() => ensureArray(goalResolution.value.completed_goals));
-const availableGoals = computed(() => ensureArray(goalResolution.value.available_goals));
-const ending = computed(() => props.turn.director_result?.ending || {});
-const completedCheckpoints = computed(() => {
-  return ensureArray(props.turn.director_result?.goal_update?.checkpoints).filter(
-    (checkpoint) => checkpoint?.status === "completed"
-  );
+const plan = computed(() => props.turn.director_plan || {});
+const directorResult = computed(() => ({
+  ...(props.turn.director_narrative || {}),
+  ...(props.turn.director_resolve || {}),
+}));
+const planPlayerInput = computed(() => plan.value?.player_input || {});
+const planSpeech = computed(() => {
+  const speech = planPlayerInput.value?.speech;
+  if (!speech) {
+    return { text: "", audience: [] };
+  }
+  if (typeof speech === "object") {
+    return {
+      text: speech.text || "",
+      audience: ensureArray(speech.audience),
+    };
+  }
+  return { text: String(speech), audience: [] };
 });
+const interactionOptions = computed(() => ensureArray(directorResult.value?.interaction?.options));
+const storyUpdate = computed(() => directorResult.value?.story_update || {});
+const ending = computed(() => directorResult.value?.ending || {});
 
 const characterNameMap = computed(() => {
   const names = Object.fromEntries(
@@ -75,7 +88,7 @@ const characterNameMap = computed(() => {
       item?.state?.name || id,
     ])
   );
-  for (const character of ensureArray(props.turn.plan?.characters)) {
+  for (const character of ensureArray(plan.value?.characters)) {
     if (character.id && !names[character.id] && character.name) {
       names[character.id] = character.name;
     }
@@ -84,13 +97,11 @@ const characterNameMap = computed(() => {
 });
 
 const narrativePayload = computed(() => {
-  return props.turn.director_result?.narrative || {
-    visible: narrativeText.value,
-  };
+  return directorResult.value?.narrative || narrativeText.value;
 });
 
 const sceneLabel = computed(() => {
-  const scene = props.turn.director_result?.scene;
+  const scene = directorResult.value?.scene;
   if (typeof scene === "string") {
     return locationName(scene);
   }
@@ -100,24 +111,65 @@ const sceneLabel = computed(() => {
   return "";
 });
 
-const timeLabel = computed(() => props.turn.director_result?.time || "");
+const timeLabel = computed(() => {
+  const time = directorResult.value?.time;
+  return typeof time === "object" ? time?.value || "" : time || "";
+});
+
+const timeMetaLabel = computed(() => {
+  const time = directorResult.value?.time;
+  if (!time || typeof time !== "object" || time.elapsed_minutes === undefined) {
+    return "";
+  }
+  const minutes = Number(time.elapsed_minutes || 0);
+  return minutes > 0 ? `+${minutes} 分钟` : "同一时刻";
+});
 
 const executionCards = computed(() => {
-  const feedbackById = new Map(
-    ensureArray(props.turn.env_feedback?.character_feedback).map((item) => [item.character_id, item])
+  const dialogueByKey = new Map(
+    ensureArray(props.turn.dialogues).map((dialogue, index) => [
+      `${dialogue.character_id || dialogue.id || ""}:${index}`,
+      dialogue,
+    ])
   );
-  const streamingById = new Map(
-    ensureArray(props.turn.stream?.character_feedback).map((item) => [item.character_id, item])
+  const fallbackById = new Map(
+    Object.entries(props.turn.characters || {}).map(([characterId, record]) => {
+        const dialogue = record?.dialogue || {};
+        const reflection = record?.reflection || {};
+        return [
+          characterId,
+          {
+            character_id: characterId,
+            name: record?.name || characterId,
+            response: dialogue.response || "",
+            raw_text: dialogue.raw_text || "",
+            emotion: reflection.emotion || "",
+            state_update: reflection.state_update || {},
+            state_changes: props.turn.state_changes?.characters?.[characterId] || {},
+            streaming: !!record?.streaming,
+          },
+        ];
+      }
+    )
   );
+  const seenById = {};
 
-  return ensureArray(props.turn.plan?.characters).map((character, index) => {
-    const doneFeedback = feedbackById.get(character.id);
-    const streamingFeedback = streamingById.get(character.id);
-    const feedback = doneFeedback || streamingFeedback || null;
+  return ensureArray(plan.value?.characters).map((character, index) => {
+    const seenIndex = seenById[character.id] || 0;
+    seenById[character.id] = seenIndex + 1;
+    const feedback = dialogueByKey.get(`${character.id}:${index}`)
+      || ensureArray(props.turn.dialogues).filter((item) => (item.character_id || item.id) === character.id)[seenIndex]
+      || fallbackById.get(character.id)
+      || null;
+    const reflection = props.turn.characters?.[character.id]?.reflection || {};
     const response = feedback?.response || "";
     const rawText = feedback?.raw_text || "";
     const order = safeOrder(character.order, index + 1);
     const name = characterName(character.id, character.name);
+    const characterChanges = props.turn.state_changes?.characters?.[character.id] || {};
+    const updateSource = Object.keys(characterChanges).length
+      ? characterChanges
+      : reflection.state_update || feedback?.state_update || {};
 
     return {
       id: character.id || `character_${index + 1}`,
@@ -125,16 +177,15 @@ const executionCards = computed(() => {
       order,
       response,
       rawText,
-      emotion: feedback?.emotion || "",
-      stateUpdate: feedback?.state_update || {},
-      updateRows: buildUpdateRows(feedback?.state_update || {}),
-      isResponding: props.turn.active_stage === "responding" && !!feedback?.streaming && !doneFeedback,
+      emotion: reflection.emotion || feedback?.emotion || "",
+      stateUpdate: updateSource,
+      updateRows: buildUpdateRows(updateSource),
+      isResponding: props.turn.active_stage === "responding" && !!feedback?.streaming && !response,
       isPlanned:
         props.turn.active_stage === "planning" &&
         !response &&
-        !doneFeedback &&
-        !streamingFeedback &&
-        index === ensureArray(props.turn.plan?.characters).length - 1,
+        !feedback &&
+        index === ensureArray(plan.value?.characters).length - 1,
     };
   });
 });
@@ -157,38 +208,26 @@ const characterOutcomeCards = computed(() => {
 });
 
 const directorUpdateGroups = computed(() => {
-  const update = props.turn.director_result?.state_update || {};
+  const update = props.turn.state_changes || directorResult.value?.state_update || {};
   const groups = [
     {
       label: "玩家",
-      rows: buildUpdateRows(update.user_state || {}),
+      rows: buildUpdateRows(update.player || {}),
     },
     {
       label: "世界",
-      rows: buildUpdateRows(update.world_state || {}),
+      rows: buildUpdateRows(update.world || {}),
     },
   ];
   return groups.filter((group) => group.rows.length);
 });
 
-const goalNoticeItems = computed(() => {
+const storyNoticeItems = computed(() => {
   const items = [];
-  for (const checkpoint of completedCheckpoints.value) {
+  if (storyUpdate.value?.text || storyUpdate.value?.status) {
     items.push({
-      key: `checkpoint-${checkpoint.goal_id}-${checkpoint.checkpoint_id}`,
-      text: `进度完成：${checkpointLabel(checkpoint.goal_id, checkpoint.checkpoint_id)}`,
-    });
-  }
-  for (const goalId of completedGoals.value) {
-    items.push({
-      key: `completed-${goalId}`,
-      text: `目标完成：${goalName(goalId)}`,
-    });
-  }
-  for (const goalId of availableGoals.value) {
-    items.push({
-      key: `available-${goalId}`,
-      text: `新目标可选：${goalName(goalId)}`,
+      key: "story-progress",
+      text: `剧情推进：${storyUpdate.value.text || storyUpdate.value.status}`,
     });
   }
   if (ending.value?.is_ended) {
@@ -202,7 +241,7 @@ const goalNoticeItems = computed(() => {
 });
 
 const hasOutcome = computed(() => {
-  return characterOutcomeCards.value.length || directorUpdateGroups.value.length || goalNoticeItems.value.length;
+  return characterOutcomeCards.value.length || directorUpdateGroups.value.length || storyNoticeItems.value.length;
 });
 
 function safeOrder(value, fallback) {
@@ -223,6 +262,33 @@ function onPickOption(option) {
   }
 }
 
+function startInputEdit() {
+  editInputText.value = userText.value;
+  isEditingInput.value = true;
+}
+
+function cancelInputEdit() {
+  isEditingInput.value = false;
+  editInputText.value = "";
+}
+
+function submitInputEdit() {
+  const text = editInputText.value.trim();
+  if (!text) {
+    return;
+  }
+  isEditingInput.value = false;
+  emit("submit-edit-latest-turn", text);
+}
+
+function onEditKeydown(event) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+    return;
+  }
+  event.preventDefault();
+  submitInputEdit();
+}
+
 function characterName(characterId, fallback = "") {
   return characterNameMap.value?.[characterId] || fallback || "角色";
 }
@@ -231,18 +297,8 @@ function locationName(locationId) {
   if (!locationId) {
     return "";
   }
-  const location = props.state?.world_state?.map_locations?.[locationId];
+  const location = props.state?.world?.map_locations?.[locationId];
   return location?.name || locationId;
-}
-
-function goalName(goalId) {
-  return props.state?.goals?.definitions?.[goalId]?.title || goalId;
-}
-
-function checkpointLabel(goalId, checkpointId) {
-  const checkpoints = props.state?.goals?.definitions?.[goalId]?.checkpoints || [];
-  const checkpoint = checkpoints.find((item) => item.id === checkpointId);
-  return checkpoint?.description || checkpoint?.title || checkpointId;
 }
 
 function normalizeDeltaPath(path) {
@@ -322,7 +378,7 @@ function statDisplayName(statName) {
   return (
     props.statRules?.[statName]?.display_name ||
     props.statRules?.character_state?.[statName]?.display_name ||
-    props.statRules?.user_state?.[statName]?.display_name ||
+    props.statRules?.player?.[statName]?.display_name ||
     props.state?.stat_rules?.[statName]?.display_name ||
     props.state?.config?.stat_rules?.[statName]?.display_name ||
     statName
@@ -392,14 +448,26 @@ function buildUpdateRows(stateUpdate) {
     </div>
 
     <div class="chat-message-row user-message-row">
-      <div class="chat-bubble user-bubble">
-        <div class="bubble-label">你</div>
-        <div class="message-content">{{ userText }}</div>
+      <div class="chat-bubble user-bubble" :class="{ 'user-bubble-editing': isEditingInput }">
+        <div class="bubble-label bubble-label-row">
+          <span>你</span>
+          <span v-if="canModifyTurn" class="turn-edit-actions">
+            <button v-if="!isEditingInput" type="button" @click="startInputEdit">编辑</button>
+          </span>
+        </div>
+        <div v-if="isEditingInput" class="message-edit-box">
+          <textarea v-model="editInputText" rows="3" @keydown="onEditKeydown" />
+          <div class="message-edit-actions">
+            <button type="button" class="ghost-button" @click="cancelInputEdit">取消</button>
+            <button type="button" @click="submitInputEdit">发送</button>
+          </div>
+        </div>
+        <div v-else class="message-content">{{ userText }}</div>
       </div>
     </div>
 
     <details
-      v-if="planPlayerInput.intent || planPlayerInput.action || planPlayerInput.speech || plan.context || executionCards.length"
+      v-if="planPlayerInput.intent || planPlayerInput.action || planSpeech.text || plan.context || executionCards.length"
       class="plan-detail"
     >
       <summary>
@@ -409,7 +477,12 @@ function buildUpdateRows(stateUpdate) {
       <div class="plan-detail-body">
         <p v-if="planPlayerInput.intent"><strong>意图：</strong>{{ planPlayerInput.intent }}</p>
         <p v-if="planPlayerInput.action"><strong>行动：</strong>{{ planPlayerInput.action }}</p>
-        <p v-if="planPlayerInput.speech"><strong>对白：</strong>{{ planPlayerInput.speech }}</p>
+        <p v-if="planSpeech.text">
+          <strong>对白：</strong>{{ planSpeech.text }}
+          <small v-if="planSpeech.audience.length">
+            （听众：{{ planSpeech.audience.map((id) => characterName(id)).join("、") }}）
+          </small>
+        </p>
         <p v-if="plan.context"><strong>上下文：</strong>{{ plan.context }}</p>
       </div>
     </details>
@@ -456,7 +529,10 @@ function buildUpdateRows(stateUpdate) {
           <span v-if="turn.active_stage === 'narrating'" class="live-badge">正在叙述...</span>
         </div>
         <div v-if="timeLabel || sceneLabel" class="turn-scene-meta">
-          <div v-if="timeLabel" class="turn-scene-line">📅 <strong>时间：</strong>{{ timeLabel }}</div>
+          <div v-if="timeLabel" class="turn-scene-line">
+            📅 <strong>时间：</strong>{{ timeLabel }}
+            <span v-if="timeMetaLabel" class="time-elapsed-pill">{{ timeMetaLabel }}</span>
+          </div>
           <div v-if="sceneLabel" class="turn-scene-line">🏘️ <strong>场所：</strong>{{ sceneLabel }}</div>
         </div>
         <NarrativeRenderer
@@ -512,9 +588,9 @@ function buildUpdateRows(stateUpdate) {
         </article>
       </div>
 
-      <div v-if="goalNoticeItems.length" class="turn-meta-strip">
+      <div v-if="storyNoticeItems.length" class="turn-meta-strip">
         <span
-          v-for="item in goalNoticeItems"
+          v-for="item in storyNoticeItems"
           :key="item.key"
           :class="{ 'completion-badge': item.ending }"
         >
@@ -533,7 +609,7 @@ function buildUpdateRows(stateUpdate) {
           :class="{ 'option-line-interactive': interactive }"
           @click="onPickOption(option)"
         >
-          <span class="option-id">{{ index + 1 }}</span>
+          <span class="option-id">[{{ option.id || index + 1 }}]</span>
           <span class="option-text">{{ option.text }}</span>
         </div>
       </div>

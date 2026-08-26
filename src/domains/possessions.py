@@ -12,8 +12,8 @@ class PossessionsDomain:
     update_key = "possessions"
 
     def get_agent_view(self, state_view: dict[str, Any], context: DomainContext) -> dict[str, Any]:
-        user_state = state_view.get("user_state", {})
-        user_state["possessions"] = self._expand(user_state.get("possessions", []), context)
+        player = state_view.get("player", {})
+        player["possessions"] = self._expand(player.get("possessions", []), context)
         for character in state_view.get("characters", {}).values():
             character_state = character.get("state", {})
             character_state["possessions"] = self._expand(character_state.get("possessions", []), context)
@@ -32,6 +32,6 @@ class PossessionsDomain:
             expanded.append({"id": item_id, **deepcopy(item_config)} if isinstance(item_config, dict) else {"id": item_id})
         return expanded
 
-    def apply_update(self, target_state: dict[str, Any], update: Any, context: DomainContext) -> dict[str, Any]:
+    def apply_update(self, runtime_state: dict[str, Any], turn_record: dict[str, Any], context: DomainContext) -> dict[str, Any]:
         # Possession mutation protocol is intentionally not enabled yet.
         return {}

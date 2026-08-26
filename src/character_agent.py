@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Iterator
 
-from .prompts import Character_Dialogue_Prompt, Character_Reflection_Prompt
+from .stages import character_dialogue, character_reflection
 from .stream_parsers.xml_protocol import CharacterStreamParser, parse_character_xml
 
 
 class CharacterAgent:
-    """Produces a single character response for one planned character task."""
+    """Runs character dialogue and reflection stages."""
 
     def __init__(self, llm_client=None, thinking: bool = False, state_manager=None) -> None:
         self.llm_client = llm_client
@@ -20,19 +19,20 @@ class CharacterAgent:
         character_context = self._load_character_context(character_id, state)
         if self.llm_client:
             try:
-                system_prompt = self._build_dialogue_system_prompt(character_id, character_context)
-                user_prompt = self._build_dialogue_prompt(character_id, character_context, plan_context)
                 raw_text = self.llm_client.generate_text(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
+                    system_prompt=character_dialogue.build_system_prompt(character_id, character_context),
+                    user_prompt=character_dialogue.build_user_prompt(character_id, character_context, plan_context),
                 )
                 self._log_complete_output(character_id, raw_text)
-                result = self._normalize_result(parse_character_xml(raw_text, character_id), character_context)
-                result["raw_text"] = raw_text
-                return result
+                result = parse_character_xml(raw_text, character_id)
+                return self._dialogue_part(character_id, result, character_context)
             except Exception:
                 pass
-        return self._build_fallback_response(character_id, character_context, plan_context)
+        return self._dialogue_part(
+            character_id,
+            self._build_fallback_response(character_id, character_context, plan_context),
+            character_context,
+        )
 
     def stream_act(
         self,
@@ -43,8 +43,10 @@ class CharacterAgent:
         state = self._resolve_state(state)
         character_context = self._load_character_context(character_id, state)
         yield {"event": "stage_started", "data": {"stage": "character", "character_id": character_id}}
+
         if not self.llm_client:
             result = self._build_fallback_response(character_id, character_context, plan_context)
+            payload = self._dialogue_part(character_id, result, character_context)
             yield {
                 "event": "block_done",
                 "data": {
@@ -57,72 +59,44 @@ class CharacterAgent:
             }
             yield {
                 "event": "stage_done",
-                "data": {"stage": "character", "character_id": character_id, "character_feedback": result},
+                "data": {
+                    "stage": "character",
+                    "character_id": character_id,
+                    "character_feedback": result,
+                    "payload": payload,
+                },
             }
             return
 
         parser = CharacterStreamParser(character_id, thinking=self.thinking_enabled)
         raw_parts: list[str] = []
-        accumulated_result = {
-            "character_id": character_id,
-            "name": character_context.get("state", {}).get("name", character_id),
-            "response": "",
-        }
-        system_prompt = self._build_dialogue_system_prompt(character_id, character_context)
-        user_prompt = self._build_dialogue_prompt(character_id, character_context, plan_context)
         for delta in self.llm_client.stream_text(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            system_prompt=character_dialogue.build_system_prompt(character_id, character_context),
+            user_prompt=character_dialogue.build_user_prompt(character_id, character_context, plan_context),
         ):
             if not delta:
                 continue
             raw_parts.append(delta)
-            for parsed_event in parser.feed(delta):
-                event_type = parsed_event["type"]
-                if event_type in {"thinking_started", "thinking_delta", "thinking_done"}:
-                    yield {
-                        "event": event_type,
-                        "data": {
-                            "source": "character",
-                            "character_id": character_id,
-                            "delta": parsed_event.get("delta", ""),
-                            "text": parsed_event.get("text", ""),
-                        },
-                    }
-                elif event_type in {"block_started", "block_delta", "block_done"}:
-                    parsed = parsed_event.get("parsed")
-                    if event_type == "block_done":
-                        block_name = parsed_event.get("block", "")
-                        if block_name == "response":
-                            accumulated_result["response"] = parsed or ""
-                        parsed = accumulated_result.get(block_name, parsed)
-                    yield {
-                        "event": event_type,
-                        "data": {
-                            "stage": "character",
-                            "character_id": character_id,
-                            "block": parsed_event.get("block", ""),
-                            "block_index": parsed_event.get("block_index", 0),
-                            "attrs": parsed_event.get("attrs", {}),
-                            "delta": parsed_event.get("delta", ""),
-                            "text": parsed_event.get("text", ""),
-                            "parsed": parsed,
-                        },
-                    }
+            yield from self._stream_parser_events(parser.feed(delta), "character", character_id)
 
         raw_text = "".join(raw_parts)
         if raw_text:
             self._log_complete_output(character_id, raw_text)
-            if not accumulated_result.get("response"):
-                parsed_result = parse_character_xml(raw_text, character_id)
-                accumulated_result["response"] = parsed_result.get("response", "")
-            accumulated_result["raw_text"] = raw_text
-        result = accumulated_result
-        if not raw_text:
-            result = self._build_fallback_response(character_id, character_context, plan_context)
+        result = (
+            parse_character_xml(raw_text, character_id)
+            if raw_text
+            else self._build_fallback_response(character_id, character_context, plan_context)
+        )
+        result["name"] = character_context.get("state", {}).get("name", character_id)
+        payload = self._dialogue_part(character_id, result, character_context)
         yield {
             "event": "stage_done",
-            "data": {"stage": "character", "character_id": character_id, "character_feedback": result},
+            "data": {
+                "stage": "character",
+                "character_id": character_id,
+                "character_feedback": result,
+                "payload": payload,
+            },
         }
 
     def reflect(
@@ -136,14 +110,40 @@ class CharacterAgent:
         if self.llm_client:
             try:
                 raw_text = self.llm_client.generate_text(
-                    system_prompt=self._build_reflection_system_prompt(character_id, character_context),
-                    user_prompt=self._build_reflection_prompt(character_id, character_context, reflection_context),
+                    system_prompt=character_reflection.build_system_prompt(character_id, character_context),
+                    user_prompt=character_reflection.build_user_prompt(character_id, character_context, reflection_context),
                 )
                 self._log_complete_output(f"{character_id}:reflection", raw_text)
-                return self._normalize_result(parse_character_xml(raw_text, character_id), character_context)
+                result = parse_character_xml(raw_text, character_id)
+                return self._reflection_part(character_id, result, character_context)
             except Exception:
                 pass
-        return self._build_fallback_reflection(character_id, character_context)
+        return self._reflection_part(
+            character_id,
+            self._build_fallback_reflection(character_id, character_context),
+            character_context,
+        )
+
+    def remember_event(
+        self,
+        character_id: str,
+        event_context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._resolve_state(state)
+        character_context = self._load_character_context(character_id, state)
+        if self.llm_client:
+            try:
+                raw_text = self.llm_client.generate_text(
+                    system_prompt=character_reflection.build_event_memory_system_prompt(character_id, character_context),
+                    user_prompt=character_reflection.build_event_memory_user_prompt(character_id, character_context, event_context),
+                )
+                self._log_complete_output(f"{character_id}:event_memory", raw_text)
+                result = parse_character_xml(raw_text, character_id)
+                return self._event_memory_part(character_id, result, character_context)
+            except Exception:
+                pass
+        return self._event_memory_part(character_id, {"memory_append": ""}, character_context)
 
     def stream_reflect(
         self,
@@ -154,8 +154,10 @@ class CharacterAgent:
         state = self._resolve_state(state)
         character_context = self._load_character_context(character_id, state)
         yield {"event": "stage_started", "data": {"stage": "character_reflection", "character_id": character_id}}
+
         if not self.llm_client:
             result = self._build_fallback_reflection(character_id, character_context)
+            payload = self._reflection_part(character_id, result, character_context)
             for index, block_name in enumerate(("emotion", "location", "state_update", "memory_append")):
                 yield {
                     "event": "block_done",
@@ -169,322 +171,108 @@ class CharacterAgent:
                 }
             yield {
                 "event": "stage_done",
-                "data": {"stage": "character_reflection", "character_id": character_id, "character_reflection": result},
+                "data": {
+                    "stage": "character_reflection",
+                    "character_id": character_id,
+                    "character_reflection": result,
+                    "payload": payload,
+                },
             }
             return
 
         parser = CharacterStreamParser(character_id, thinking=self.thinking_enabled)
         raw_parts: list[str] = []
-        accumulated_result = {
-            "character_id": character_id,
-            "name": character_context.get("state", {}).get("name", character_id),
-            "response": "",
-            "emotion": "",
-            "location": {},
-            "state_update": {},
-            "memory_append": "",
-        }
         for delta in self.llm_client.stream_text(
-            system_prompt=self._build_reflection_system_prompt(character_id, character_context),
-            user_prompt=self._build_reflection_prompt(character_id, character_context, reflection_context),
+            system_prompt=character_reflection.build_system_prompt(character_id, character_context),
+            user_prompt=character_reflection.build_user_prompt(character_id, character_context, reflection_context),
         ):
             if not delta:
                 continue
             raw_parts.append(delta)
-            for parsed_event in parser.feed(delta):
-                event_type = parsed_event["type"]
-                if event_type in {"thinking_started", "thinking_delta", "thinking_done"}:
-                    yield {
-                        "event": event_type,
-                        "data": {
-                            "source": "character_reflection",
-                            "character_id": character_id,
-                            "delta": parsed_event.get("delta", ""),
-                            "text": parsed_event.get("text", ""),
-                        },
-                    }
-                elif event_type in {"block_started", "block_delta", "block_done"}:
-                    parsed = parsed_event.get("parsed")
-                    if event_type == "block_done":
-                        block_name = parsed_event.get("block", "")
-                        if block_name == "emotion":
-                            accumulated_result["emotion"] = parsed or ""
-                        elif block_name == "location":
-                            accumulated_result["location"] = parsed or {}
-                            if parsed:
-                                accumulated_result.setdefault("state_update", {})["location"] = parsed
-                        elif block_name == "state_update":
-                            accumulated_result["state_update"] = parsed or {}
-                        elif block_name == "memory_append":
-                            memory = parsed or {}
-                            accumulated_result["memory_append"] = memory.get("text", "") if isinstance(memory, dict) else ""
-                        elif block_name:
-                            accumulated_result[block_name] = parsed
-                        parsed = accumulated_result.get(block_name, parsed)
-                    yield {
-                        "event": event_type,
-                        "data": {
-                            "stage": "character_reflection",
-                            "character_id": character_id,
-                            "block": parsed_event.get("block", ""),
-                            "block_index": parsed_event.get("block_index", 0),
-                            "attrs": parsed_event.get("attrs", {}),
-                            "delta": parsed_event.get("delta", ""),
-                            "text": parsed_event.get("text", ""),
-                            "parsed": parsed,
-                        },
-                    }
+            yield from self._stream_parser_events(parser.feed(delta), "character_reflection", character_id)
 
         raw_text = "".join(raw_parts)
         if raw_text:
             self._log_complete_output(f"{character_id}:reflection", raw_text)
-            if not accumulated_result.get("emotion") and not accumulated_result.get("state_update"):
-                parsed_result = parse_character_xml(raw_text, character_id)
-                accumulated_result["emotion"] = parsed_result.get("emotion", "")
-                accumulated_result["state_update"] = parsed_result.get("state_update", {})
-                if parsed_result.get("location"):
-                    accumulated_result["location"] = parsed_result.get("location", {})
-                    accumulated_result["state_update"]["location"] = parsed_result["location"]
-                accumulated_result["memory_append"] = parsed_result.get("memory_append", "")
-        if accumulated_result.get("location"):
-            accumulated_result.setdefault("state_update", {})["location"] = accumulated_result["location"]
-        result = accumulated_result if raw_text else self._build_fallback_reflection(character_id, character_context)
+        result = (
+            parse_character_xml(raw_text, character_id)
+            if raw_text
+            else self._build_fallback_reflection(character_id, character_context)
+        )
+        result["name"] = character_context.get("state", {}).get("name", character_id)
+        payload = self._reflection_part(character_id, result, character_context)
         yield {
             "event": "stage_done",
-            "data": {"stage": "character_reflection", "character_id": character_id, "character_reflection": result},
+            "data": {
+                "stage": "character_reflection",
+                "character_id": character_id,
+                "character_reflection": result,
+                "payload": payload,
+            },
         }
+
+    def _stream_parser_events(
+        self,
+        parsed_events: Iterator[dict[str, Any]],
+        stage: str,
+        character_id: str,
+    ) -> Iterator[dict[str, Any]]:
+        for parsed_event in parsed_events:
+            event_type = parsed_event["type"]
+            if event_type in {"thinking_started", "thinking_delta", "thinking_done"}:
+                yield {
+                    "event": event_type,
+                    "data": {
+                        "source": stage,
+                        "character_id": character_id,
+                        "delta": parsed_event.get("delta", ""),
+                        "text": parsed_event.get("text", ""),
+                    },
+                }
+            elif event_type in {"block_started", "block_delta", "block_done"}:
+                yield {
+                    "event": event_type,
+                    "data": {
+                        "stage": stage,
+                        "character_id": character_id,
+                        "block": parsed_event.get("block", ""),
+                        "block_index": parsed_event.get("block_index", 0),
+                        "attrs": parsed_event.get("attrs", {}),
+                        "delta": parsed_event.get("delta", ""),
+                        "text": parsed_event.get("text", ""),
+                        "parsed": parsed_event.get("parsed"),
+                    },
+                }
 
     def _load_character_context(self, character_id: str, state: dict[str, Any]) -> dict[str, Any]:
         return state.get("characters", {}).get(character_id, {"profile": "", "state": {}, "memory": ""})
+
+    def _dialogue_part(self, character_id: str, result: dict[str, Any], character_context: dict[str, Any]) -> dict[str, Any]:
+        name = character_context.get("state", {}).get("name", character_id)
+        dialogue = {"response": result.get("response", "")}
+        if result.get("audience"):
+            dialogue["audience"] = result["audience"]
+        return {"characters": {character_id: {"id": character_id, "name": name, "dialogue": dialogue}}}
+
+    def _reflection_part(self, character_id: str, result: dict[str, Any], character_context: dict[str, Any]) -> dict[str, Any]:
+        name = character_context.get("state", {}).get("name", character_id)
+        reflection = {
+            "emotion": result.get("emotion", ""),
+            "location": result.get("location", {}),
+            "state_update": result.get("state_update", {}),
+            "memory_append": result.get("memory_append", ""),
+        }
+        return {"characters": {character_id: {"id": character_id, "name": name, "reflection": reflection}}}
+
+    def _event_memory_part(self, character_id: str, result: dict[str, Any], character_context: dict[str, Any]) -> dict[str, Any]:
+        name = character_context.get("state", {}).get("name", character_id)
+        event_memory = {"memory_append": result.get("memory_append", "")}
+        return {"characters": {character_id: {"id": character_id, "name": name, "event_memory": event_memory}}}
 
     def _resolve_state(self, fallback_state: dict[str, Any]) -> dict[str, Any]:
         if self.state_manager is not None:
             return self.state_manager.get_agent_state_view()
         return fallback_state
-
-    def _build_dialogue_prompt(
-        self,
-        character_id: str,
-        character_context: dict[str, Any],
-        plan_context: dict[str, Any],
-    ) -> str:
-        state_snapshot = character_context.get("state", {})
-        dialogue_state = self._format_dialogue_state(state_snapshot)
-        profile_excerpt = character_context.get("profile", "")
-        memory_context = self._format_memory_context(character_context.get("memory"))
-        turn_dialogue = self._format_turn_dialogue(plan_context.get("turn_dialogue", []), character_id)
-        return (
-            "PROFILE:\n"
-            f"{profile_excerpt}\n\n"
-            "STATE:\n"
-            f"{dialogue_state}\n\n"
-            "MEMORY:\n"
-            f"{memory_context}\n\n"
-            "CONTEXT:\n"
-            f"{plan_context.get('context', '')}\n\n"
-            "PLAYER_INPUT:\n"
-            f"{self._format_prompt_value(plan_context.get('player_input', {}))}\n\n"
-            "TURN_DIALOGUE:\n"
-            f"{turn_dialogue}\n\n"
-            "Return strict TAG format with <response> only."
-        )
-
-    def _build_reflection_prompt(
-        self,
-        character_id: str,
-        character_context: dict[str, Any],
-        reflection_context: dict[str, Any],
-    ) -> str:
-        state_snapshot = character_context.get("state", {})
-        profile_excerpt = character_context.get("profile", "")
-        memory_context = self._format_memory_context(character_context.get("memory"))
-        raw_response = reflection_context.get("raw_response", reflection_context.get("response", ""))
-        final_narrative = reflection_context.get(
-            "final_narrative",
-            reflection_context.get("narrative_result", reflection_context.get("narrative", "")),
-        )
-        final_narrative = self._reflection_narrative_text(final_narrative)
-        updatable_state = {
-            "stats": self._without_active_effects(state_snapshot.get("stats", {})),
-            "relations": self._without_active_effects(state_snapshot.get("relations", {})),
-        }
-        known_scene_ids = reflection_context.get("known_scene_ids", {})
-        return (
-            "PROFILE:\n"
-            f"{profile_excerpt}\n\n"
-            "CURRENT EMOTION:\n"
-            f"{state_snapshot.get('emotion') or 'unknown'}\n\n"
-            "UPDATABLE STATE:\n"
-            f"{self._format_prompt_value(updatable_state)}\n\n"
-            "MEMORY:\n"
-            f"{memory_context}\n\n"
-            "YOUR RAW RESPONSE:\n"
-            f"{self._format_prompt_value(raw_response)}\n\n"
-            "FINAL NARRATIVE:\n"
-            f"{self._format_prompt_value(final_narrative)}\n\n"
-            "KNOWN SCENE IDS:\n"
-            f"{self._format_prompt_value(known_scene_ids)}\n\n"
-            "Return strict TAG format with <emotion>, <location>, <state_update>, and <memory_append>."
-        )
-
-    def _format_dialogue_state(self, state_snapshot: Any) -> str:
-        if not isinstance(state_snapshot, dict):
-            return "(none)"
-
-        location = state_snapshot.get("location", {})
-        if isinstance(location, dict):
-            location_name = location.get("name") or location.get("id") or "未知"
-            location_parts = [
-                str(location_name),
-                str(location.get("description", "")).strip(),
-                str(location.get("connections", "")).strip(),
-            ]
-            location_text = "。".join(part for part in location_parts if part)
-        else:
-            location_text = str(location or "未知")
-
-        stat_lines: list[str] = []
-        stats = state_snapshot.get("stats", {})
-        if isinstance(stats, dict):
-            for item in stats.values():
-                if not isinstance(item, dict):
-                    continue
-                effects = item.get("active_effects", [])
-                if isinstance(effects, list):
-                    stat_lines.extend(f"  - {str(effect).strip()}" for effect in effects if str(effect).strip())
-                elif str(effects).strip():
-                    stat_lines.append(f"  - {str(effects).strip()}")
-
-        relation_lines: list[str] = []
-        relations = state_snapshot.get("relations", {})
-        for metric in relations.get("player", {}).values():
-            relation_lines.extend(
-                f"  - {str(effect).strip()}"
-                for effect in metric.get("active_effects", [])
-                if str(effect).strip()
-            )
-
-        possession_lines: list[str] = []
-        possessions = state_snapshot.get("possessions", [])
-        if isinstance(possessions, list):
-            for item in possessions:
-                if isinstance(item, dict):
-                    item_id = str(item.get("id", "")).strip()
-                    name = str(item.get("name", "") or item_id).strip()
-                    description = str(item.get("description", "")).strip()
-                    label = f"{name} ({item_id})" if item_id and item_id != name else name
-                    if label:
-                        possession_lines.append(f"  - {label}：{description}" if description else f"  - {label}")
-                elif item:
-                    possession_lines.append(f"  - {item}")
-
-        return "\n".join(
-            [
-                f"- 当前情绪：{state_snapshot.get('emotion') or '未知'}",
-                f"- 所在场景：{location_text}",
-                "- 当前状态影响：",
-                *(stat_lines or ["  - 暂无明显状态影响"]),
-                "- 对玩家态度：",
-                *(relation_lines or ["  - 暂无明确态度影响"]),
-                "- 持有物品：",
-                *(possession_lines or ["  - 无"]),
-            ]
-        )
-
-    def _format_turn_dialogue(self, turn_dialogue: Any, current_character_id: str) -> str:
-        if not isinstance(turn_dialogue, list):
-            return "(none)"
-        lines: list[str] = []
-        for item in turn_dialogue:
-            if not isinstance(item, dict):
-                continue
-            speaker_id = str(item.get("character_id", "")).strip()
-            text_key = "raw_response" if speaker_id == current_character_id else "visible_dialogue"
-            text = str(item.get(text_key) or "").strip()
-            if not text:
-                continue
-            label = speaker_id or "unknown"
-            lines.append(f"[{label}]\n{text}")
-        return "\n\n".join(lines) if lines else "(none)"
-
-    def _format_memory_context(self, memory: Any) -> str:
-        if isinstance(memory, dict):
-            core = self._format_memory_items(memory.get("core", []))
-            turns = self._format_memory_items(memory.get("turns", []))
-            return (
-                "CORE MEMORY:\n"
-                f"{core or '(none)'}\n\n"
-                "RECENT TURN MEMORY:\n"
-                f"{turns or '(none)'}"
-            )
-        memory_text = str(memory or "").strip()
-        return memory_text[-600:] if memory_text else "(none)"
-
-    def _format_memory_items(self, items: Any) -> str:
-        if not isinstance(items, list):
-            return ""
-        lines: list[str] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            turn = item.get("turn")
-            text = str(item.get("text", "")).strip()
-            if text:
-                label = f"[Turn {turn}]" if turn else "[Turn ?]"
-                lines.append(f"{label} {text}")
-        return "\n".join(lines)
-
-    def _format_prompt_value(self, value: Any) -> str:
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False, indent=2)
-        return str(value or "")
-
-    def _without_active_effects(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: self._without_active_effects(item) for key, item in value.items() if key != "active_effects"}
-        if isinstance(value, list):
-            return [self._without_active_effects(item) for item in value]
-        return value
-
-    def _reflection_narrative_text(self, final_narrative: Any) -> str:
-        if isinstance(final_narrative, dict):
-            narrative = final_narrative.get("narrative", final_narrative)
-            if isinstance(narrative, dict):
-                return str(narrative.get("visible", "") or "")
-            return str(narrative or "")
-        return str(final_narrative or "")
-
-    def _build_dialogue_system_prompt(self, character_id: str, character_context: dict[str, Any]) -> str:
-        state_snapshot = character_context.get("state", {})
-        return Character_Dialogue_Prompt.format(
-            character_name=state_snapshot.get("name", character_id),
-            character_id=character_id,
-        )
-
-    def _build_reflection_system_prompt(self, character_id: str, character_context: dict[str, Any]) -> str:
-        state_snapshot = character_context.get("state", {})
-        return Character_Reflection_Prompt.format(
-            character_name=state_snapshot.get("name", character_id),
-            character_id=character_id,
-        )
-
-    def _normalize_result(self, result: dict[str, Any], character_context: dict[str, Any]) -> dict[str, Any]:
-        state = character_context.get("state", {})
-        return {
-            "character_id": result.get("character_id", ""),
-            "name": state.get("name", result.get("character_id", "")),
-            "response": result.get("response", ""),
-            "emotion": result.get("emotion", ""),
-            "state_update": self._state_update_with_location(result),
-            "memory_append": result.get("memory_append", ""),
-        }
-
-    def _state_update_with_location(self, result: dict[str, Any]) -> dict[str, Any]:
-        state_update = dict(result.get("state_update") or {})
-        location = result.get("location")
-        if location:
-            state_update["location"] = location
-        return state_update
 
     def _build_fallback_response(
         self,
@@ -494,11 +282,10 @@ class CharacterAgent:
     ) -> dict[str, Any]:
         content = plan_context.get("context") or "……"
         name = character_context.get("state", {}).get("name", character_id)
-        response = f"{name}听完后短暂停顿：‘关于“{content}”，我需要再想想。’"
         return {
             "character_id": character_id,
             "name": name,
-            "response": response,
+            "response": f"{name}听完后短暂停顿：“关于‘{content}’，我需要再想想。”",
         }
 
     def _build_fallback_reflection(self, character_id: str, character_context: dict[str, Any]) -> dict[str, Any]:

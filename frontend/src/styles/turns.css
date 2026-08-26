@@ -17,6 +17,17 @@
   color: var(--muted);
 }
 
+.time-elapsed-pill {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(182, 92, 57, 0.12);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .message-list {
   min-height: 0;
   height: 100%;
@@ -81,6 +92,10 @@
   color: var(--ink);
   background: rgba(255, 255, 255, 0.82);
   border: 1px solid rgba(216, 204, 186, 0.9);
+}
+
+.user-bubble-editing {
+  width: min(980px, 94%);
 }
 
 .assistant-bubble {

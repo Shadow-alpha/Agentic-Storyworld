@@ -16,7 +16,7 @@ class RelationsDomain:
 
     def get_agent_view(self, state_view: dict[str, Any], context: DomainContext) -> dict[str, Any]:
         characters = state_view.get("characters", {})
-        state_view["user_state"]["relations"] = self.get_player_agent_view(characters, context)
+        state_view["player"]["relations"] = self.get_player_agent_view(characters, context)
         for character in characters.values():
             character_state = character.get("state", {})
             character_state["relations"] = self._compact_relations(character_state.get("relations", {}), context)
@@ -45,31 +45,36 @@ class RelationsDomain:
                 relations[character_id] = view
         return relations
 
-    def apply_update(
-        self,
-        target_state: dict[str, Any],
-        update: Any,
-        context: DomainContext,
-        path: tuple[str, ...] = ("relations",),
-    ) -> dict[str, Any]:
+    def apply_update(self, runtime_state: dict[str, Any], turn_record: dict[str, Any], context: DomainContext) -> dict[str, Any]:
+        changes: dict[str, Any] = {"characters": {}}
+        runtime_characters = runtime_state.setdefault("characters", {})
+        for character_id, character_record in (turn_record.get("characters") or {}).items():
+            reflection = character_record.get("reflection", {}) if isinstance(character_record, dict) else {}
+            state_update = reflection.get("state_update", {}) if isinstance(reflection, dict) else {}
+            relation_update = state_update.get("relations", {}) if isinstance(state_update, dict) else {}
+            runtime_character = runtime_characters.get(character_id, {})
+            character_state = runtime_character.get("state", {}) if isinstance(runtime_character, dict) else {}
+            character_changes = self._apply_relations(character_state, relation_update, context)
+            if character_changes:
+                changes["characters"].setdefault(character_id, {}).update(character_changes)
+        return changes if changes["characters"] else {}
+
+    def _apply_relations(self, target_state: dict[str, Any], update: Any, context: DomainContext) -> dict[str, Any]:
         changes: dict[str, Any] = {}
-        if not isinstance(update, dict):
-            return changes
-        relations = target_state.setdefault("relations", {})
-        if not isinstance(relations, dict):
+        relations = target_state.get("relations", {}) if isinstance(target_state, dict) else {}
+        if not isinstance(relations, dict) or not isinstance(update, dict):
             return changes
         rules = context.config.get("relation_rules", {})
         for target_id, target_delta in update.items():
             target_group = relations.get(target_id)
-            if not isinstance(target_group, dict):
-                continue
-            changes.update(
-                self.stats._apply_metric_group(
-                    target_group,
-                    target_delta,
-                    rules,
-                    context,
-                    path + (str(target_id),),
+            if isinstance(target_group, dict):
+                changes.update(
+                    self.stats._apply_metric_group(
+                        target_group,
+                        target_delta,
+                        rules,
+                        context,
+                        ("relations", str(target_id)),
+                    )
                 )
-            )
         return changes

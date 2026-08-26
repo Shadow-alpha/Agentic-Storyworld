@@ -122,8 +122,8 @@ class GameApp:
         config = state.get("config", {})
         opening_text = config.get("opening") or "游戏开始。输入 `quit` 可退出。"
         return {
-            "narrative": {"visible": opening_text, "hidden": ""},
-            "goal": {},
+            "narrative": opening_text,
+            "story_update": {},
             "interaction": {"mode": self.next_input_mode, "options": []},
             "state_update": {},
         }
@@ -131,7 +131,7 @@ class GameApp:
     def get_ui_state(self, log_limit: int | None = 50) -> dict[str, Any]:
         state = self.get_current_state()
         logs = self.get_current_logs(limit=log_limit)
-        turns = self._build_ui_turns(logs)
+        turns = logs.get("turn_log", [])
         latest_turn = turns[-1] if turns else self.get_opening_payload()
         return {
             "game_id": self.game_id,
@@ -149,12 +149,28 @@ class GameApp:
 
     def process_turn(self, user_input: dict[str, Any]) -> dict[str, Any]:
         self.bootstrap_runtime()
+        self.state_manager.create_latest_turn_snapshot()
         state_before = self.state_manager.get_agent_state_view()
         logs = self.state_manager.get_logs()
-        agent_user_input = self._agent_user_input(user_input)
-        plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs)
+        turn_index = self.state_manager.get_turn_count() + 1
+        agent_user_input = str(user_input.get("raw_text") or user_input.get("selected_choice") or "").strip()
+        turn_record = {
+            "turn_index": turn_index,
+            "user_input": user_input,
+            "director_plan": {},
+            "dialogues": [],
+            "characters": {},
+            "director_narrative": {},
+            "director_resolve": {},
+            "state_changes": {},
+        }
+
+        plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs).get("director_plan", {})
+        turn_record["director_plan"] = plan
         player_input = plan.get("player_input", {})
         ordered_feedback = self._run_dialogue(plan, state_before)
+        turn_record["dialogues"] = ordered_feedback
+
         narrative_env_feedback = self._narrative_env_feedback(ordered_feedback)
         env_feedback = self.environment.finalize_feedback(ordered_feedback)
         narrative_result = self.director.narrative(
@@ -162,25 +178,42 @@ class GameApp:
             state=state_before,
             logs=logs,
             user_input=player_input,
-        )
-        resolve_result, reflections = self._resolve_and_reflect(
+            story_guidance=plan.get("story_guidance", ""),
+        ).get("director_narrative", {})
+        turn_record["director_narrative"] = narrative_result
+
+        resolve_part, reflection_parts = self._resolve_and_reflect(
             ordered_feedback,
             narrative_result,
             state_before,
             logs,
             player_input,
         )
-        self._merge_reflections(ordered_feedback, reflections)
-        env_feedback = self.environment.finalize_feedback(ordered_feedback)
-        director_result = {**resolve_result, **narrative_result}
-        return self._finalize_turn(user_input, plan, env_feedback, director_result)
+        turn_record["director_resolve"] = resolve_part.get("director_resolve", {})
+        for character_id, reflection_part in reflection_parts.items():
+            character = (reflection_part.get("characters") or {}).get(character_id, {})
+            if isinstance(character, dict):
+                turn_record["characters"].setdefault(character_id, {}).update(character)
+        self._append_event_memories(turn_record, state_before)
+        return self._finalize_turn(turn_record, env_feedback, state_before)
 
     def stream_turn(self, user_input: dict[str, Any]) -> Iterator[dict[str, Any]]:
         self.bootstrap_runtime()
+        self.state_manager.create_latest_turn_snapshot()
         state_before = self.state_manager.get_agent_state_view()
         logs = self.state_manager.get_logs()
         turn_index = self.state_manager.get_turn_count() + 1
-        agent_user_input = self._agent_user_input(user_input)
+        agent_user_input = str(user_input.get("raw_text") or user_input.get("selected_choice") or "").strip()
+        turn_record = {
+            "turn_index": turn_index,
+            "user_input": user_input,
+            "director_plan": {},
+            "dialogues": [],
+            "characters": {},
+            "director_narrative": {},
+            "director_resolve": {},
+            "state_changes": {},
+        }
 
         yield {"event": "turn_started", "data": {"turn_index": turn_index, "user_input": user_input}}
 
@@ -188,45 +221,54 @@ class GameApp:
         for event in self.director.stream_plan(user_input=agent_user_input, state=state_before, logs=logs):
             data = dict(event.get("data", {}))
             if event["event"] == "stage_done" and data.get("stage") == "director_plan":
-                plan = data["plan"]
+                plan = ((data.get("payload") or {}).get("director_plan") or {})
+                turn_record["director_plan"] = plan
             data["turn_index"] = turn_index
             yield {"event": event["event"], "data": data}
 
         if plan is None:
-            plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs)
+            plan = self.director.plan(user_input=agent_user_input, state=state_before, logs=logs).get("director_plan", {})
+            turn_record["director_plan"] = plan
         player_input = plan.get("player_input", {})
 
         ordered_feedback: list[dict[str, Any]] = []
-        turn_dialogue: list[dict[str, str]] = []
+        turn_dialogue: list[dict[str, Any]] = []
         character_index = 0
         for group in self.environment.grouped_characters(plan.get("characters", [])):
             group_entries: list[dict[str, str]] = []
             for character in group:
-                character_feedback: dict[str, Any] | None = None
-                for event in self.environment.stream_character(character, state_before, turn_dialogue):
+                character_task = {
+                    **character,
+                    "player_name": state_before.get("player_display_name", ""),
+                    "player_input": player_input,
+                    "context": plan.get("context", ""),
+                }
+                for event in self.environment.stream_character(character_task, state_before, turn_dialogue):
                     data = dict(event.get("data", {}))
                     data["turn_index"] = turn_index
                     data["character_index"] = character_index
                     if event["event"] == "stage_done" and data.get("stage") == "character":
-                        character_feedback = data["character_feedback"]
-                        character_feedback["order"] = character.get("order", 1)
-                        character_feedback["raw_response"] = character_feedback.get("response", "")
-                        character_feedback["raw_text"] = character_feedback.get("raw_text", "")
-                        character_feedback["visible_dialogue"] = self.environment.visible_dialogue(
-                            character_feedback.get("response", "")
-                        )
-                        group_entries.append(self.environment.dialogue_entry(character_feedback))
+                        character_payload = (data.get("payload", {}) or {}).get("characters", {})
+                        character_id = character.get("id", "")
+                        character_record = character_payload.get(character_id, {})
+                        dialogue = character_record.get("dialogue", {}) if isinstance(character_record, dict) else {}
+                        response = dialogue.get("response", "") if isinstance(dialogue, dict) else ""
+                        character_feedback = {
+                            "character_id": character_id,
+                            "name": character_record.get("name", character_id) if isinstance(character_record, dict) else character_id,
+                            "order": character.get("order", 1),
+                            "response": response,
+                            "audience": dialogue.get("audience", []) if isinstance(dialogue, dict) else [],
+                        }
+                        group_entries.append(self._dialogue_context_entry(character_feedback))
                         ordered_feedback.append(character_feedback)
+                        turn_record["dialogues"].append(character_feedback)
                     yield {"event": event["event"], "data": data}
                 character_index += 1
             turn_dialogue.extend(group_entries)
 
         narrative_env_feedback = self._narrative_env_feedback(ordered_feedback)
         env_feedback = self.environment.finalize_feedback(ordered_feedback)
-        yield {
-            "event": "stage_done",
-            "data": {"turn_index": turn_index, "stage": "environment", "env_feedback": env_feedback},
-        }
 
         narrative_result: dict[str, Any] | None = None
         for event in self.director.stream_narrative(
@@ -234,10 +276,12 @@ class GameApp:
             state=state_before,
             logs=logs,
             user_input=player_input,
+            story_guidance=plan.get("story_guidance", ""),
         ):
             data = dict(event.get("data", {}))
             if event["event"] == "stage_done" and data.get("stage") == "director_narrative":
-                narrative_result = data["narrative_result"]
+                narrative_result = ((data.get("payload") or {}).get("director_narrative") or {})
+                turn_record["director_narrative"] = narrative_result
             data["turn_index"] = turn_index
             yield {"event": event["event"], "data": data}
 
@@ -247,10 +291,11 @@ class GameApp:
                 state=state_before,
                 logs=logs,
                 user_input=player_input,
-            )
+                story_guidance=plan.get("story_guidance", ""),
+            ).get("director_narrative", {})
+            turn_record["director_narrative"] = narrative_result
 
-        resolve_result: dict[str, Any] | None = None
-        reflections: dict[str, dict[str, Any]] = {}
+        resolve_done = False
         for event in self._stream_resolve_and_reflections(
             ordered_feedback,
             narrative_result,
@@ -260,36 +305,64 @@ class GameApp:
         ):
             data = dict(event.get("data", {}))
             if event["event"] == "stage_done" and data.get("stage") == "director_resolve":
-                resolve_result = data["resolve_result"]
+                resolve_done = True
+                turn_record["director_resolve"] = ((data.get("payload") or {}).get("director_resolve") or {})
             elif event["event"] == "stage_done" and data.get("stage") == "character_reflection":
                 character_id = data.get("character_id", "")
                 if character_id:
-                    reflections[character_id] = data.get("character_reflection", {})
+                    character = ((data.get("payload", {}) or {}).get("characters") or {}).get(character_id, {})
+                    if isinstance(character, dict):
+                        turn_record["characters"].setdefault(character_id, {}).update(character)
             data["turn_index"] = turn_index
             yield {"event": event["event"], "data": data}
 
-        if resolve_result is None:
-            resolve_result = self.director.resolve(
+        if not resolve_done:
+            turn_record["director_resolve"] = self.director.resolve(
                 narrative_result=narrative_result,
                 state=state_before,
                 logs=logs,
                 user_input=player_input,
-            )
+            ).get("director_resolve", {})
 
-        self._merge_reflections(ordered_feedback, reflections)
-        env_feedback = self.environment.finalize_feedback(ordered_feedback)
-        director_result = {**resolve_result, **narrative_result}
-        payload = self._finalize_turn(user_input, plan, env_feedback, director_result)
+        self._append_event_memories(turn_record, state_before)
+        payload = self._finalize_turn(turn_record, env_feedback, state_before)
         yield {"event": "turn_completed", "data": {"turn_index": turn_index, "payload": payload}}
 
-    def _run_dialogue(self, plan: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+    def _run_dialogue(
+        self,
+        plan: dict[str, Any],
+        state: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         ordered_feedback: list[dict[str, Any]] = []
-        turn_dialogue: list[dict[str, str]] = []
+        turn_dialogue: list[dict[str, Any]] = []
         for group in self.environment.grouped_characters(plan.get("characters", [])):
             group_entries: list[dict[str, str]] = []
             for character in group:
-                feedback = self.environment.run_character(character, state, turn_dialogue)
-                group_entries.append(self.environment.dialogue_entry(feedback))
+                character_id = character.get("id", "")
+                if not character_id:
+                    continue
+                part = self.environment.character_agent.act(
+                    character_id,
+                    {
+                        **character,
+                        "player_name": state.get("player_display_name", ""),
+                        "player_input": plan.get("player_input", {}),
+                        "context": plan.get("context", ""),
+                        "turn_dialogue": list(turn_dialogue),
+                    },
+                    state,
+                )
+                character_record = (part.get("characters") or {}).get(character_id, {})
+                dialogue = character_record.get("dialogue", {}) if isinstance(character_record, dict) else {}
+                response = dialogue.get("response", "") if isinstance(dialogue, dict) else ""
+                feedback = {
+                    "character_id": character_id,
+                    "name": character_record.get("name", character_id) if isinstance(character_record, dict) else character_id,
+                    "order": character.get("order", 1),
+                    "response": response,
+                    "audience": dialogue.get("audience", []) if isinstance(dialogue, dict) else [],
+                }
+                group_entries.append(self._dialogue_context_entry(feedback))
                 ordered_feedback.append(feedback)
             turn_dialogue.extend(group_entries)
         return ordered_feedback
@@ -400,9 +473,9 @@ class GameApp:
                 targets[character_id] = dict(feedback)
                 continue
             previous = targets[character_id]
-            previous["raw_response"] = "\n".join(
+            previous["response"] = "\n".join(
                 part
-                for part in [previous.get("raw_response", ""), feedback.get("raw_response", feedback.get("response", ""))]
+                for part in [previous.get("response", ""), feedback.get("response", "")]
                 if part
             )
         return targets
@@ -413,36 +486,34 @@ class GameApp:
         narrative_result: dict[str, Any],
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        world_state = state.get("world_state", {}) if isinstance(state, dict) else {}
-        map_locations = world_state.get("map_locations", {}) if isinstance(world_state, dict) else {}
+        world = state.get("world", {}) if isinstance(state, dict) else {}
+        map_locations = world.get("map_locations", {}) if isinstance(world, dict) else {}
         known_scene_ids = {
             scene_id: scene.get("name", scene_id)
             for scene_id, scene in map_locations.items()
             if isinstance(scene, dict)
         } if isinstance(map_locations, dict) else {}
         return {
-            "raw_response": feedback.get("raw_response") or feedback.get("response", ""),
+            "raw_response": feedback.get("response", ""),
             "final_narrative": narrative_result,
             "known_scene_ids": known_scene_ids,
         }
 
-    def _merge_reflections(
-        self,
-        ordered_feedback: list[dict[str, Any]],
-        reflections: dict[str, dict[str, Any]],
-    ) -> None:
-        for feedback in ordered_feedback:
-            character_id = feedback.get("character_id", "")
-            reflection = reflections.get(character_id)
-            if not reflection:
-                continue
-            feedback["emotion"] = reflection.get("emotion", feedback.get("emotion", ""))
-            feedback["state_update"] = reflection.get("state_update", {})
-            feedback["memory_append"] = reflection.get("memory_append", "")
+    def _dialogue_context_entry(self, feedback: dict[str, Any]) -> dict[str, Any]:
+        response = str(feedback.get("response") or "")
+        entry = {
+            "character_id": str(feedback.get("character_id", "")),
+            "raw_response": response,
+            "visible_dialogue": self.environment.visible_dialogue(response),
+        }
+        if feedback.get("audience"):
+            entry["audience"] = feedback["audience"]
+        return entry
 
     def reset_game(self) -> dict[str, Any]:
         self.bootstrap_runtime()
         self.state_manager.initialize_runtime(reset=True)
+        self.state_manager.clear_latest_turn_snapshot()
         self.next_input_mode = INPUT_MODE_HYBRID
         self.next_choices = []
         return self.get_ui_state()
@@ -458,19 +529,25 @@ class GameApp:
         self._restore_ui_progress_from_logs()
         return self.get_ui_state()
 
+    def delete_save(self, slot_id: str) -> dict[str, Any]:
+        self.bootstrap_runtime()
+        self.state_manager.delete_save(slot_id)
+        return self.get_ui_state()
+
+    def rename_save(self, old_slot_id: str, new_slot_id: str) -> dict[str, Any]:
+        self.bootstrap_runtime()
+        self.state_manager.rename_save(old_slot_id, new_slot_id)
+        return self.get_ui_state()
+
+    def revert_latest_turn(self) -> dict[str, Any]:
+        self.bootstrap_runtime()
+        self.state_manager.revert_latest_turn()
+        self._restore_ui_progress_from_logs()
+        return self.get_ui_state()
+
     def customize_player(self, values: dict[str, Any]) -> dict[str, Any]:
         self.bootstrap_runtime()
         self.state_manager.apply_player_customization(values)
-        return self.get_ui_state()
-
-    def activate_goal(self, goal_id: str) -> dict[str, Any]:
-        self.bootstrap_runtime()
-        self.state_manager.activate_goal(goal_id)
-        return self.get_ui_state()
-
-    def deactivate_goal(self, goal_id: str) -> dict[str, Any]:
-        self.bootstrap_runtime()
-        self.state_manager.deactivate_goal(goal_id)
         return self.get_ui_state()
 
     def run_turn(self) -> bool:
@@ -479,11 +556,14 @@ class GameApp:
         if raw_text in {"quit", "exit", "退出"}:
             return False
         turn_result = self.process_turn(user_input)
-        self.user_layer.render_turn(turn_result["director_result"])
+        turn_record = turn_result["turn_record"]
+        self.user_layer.render_turn(
+            {
+                **(turn_record.get("director_resolve") or {}),
+                **(turn_record.get("director_narrative") or {}),
+            }
+        )
         return True
-
-    def _agent_user_input(self, user_input: dict[str, Any]) -> str:
-        return str(user_input.get("raw_text") or user_input.get("selected_choice") or "").strip()
 
     def run(self) -> None:
         self.bootstrap_runtime()
@@ -496,160 +576,25 @@ class GameApp:
         latest_turn = logs.get("turn_log", [])
         if latest_turn:
             record = latest_turn[-1]
-            interaction = self._director_result_from_log(record).get("interaction", {})
+            interaction = record.get("director_resolve", {}).get("interaction", {})
             self.next_input_mode = INPUT_MODE_HYBRID
             self.next_choices = interaction.get("options", [])
         else:
             self.next_input_mode = INPUT_MODE_HYBRID
             self.next_choices = []
 
-    def _build_ui_turns(self, logs: dict[str, Any]) -> list[dict[str, Any]]:
-        turns: list[dict[str, Any]] = []
-        for index, record in enumerate(logs.get("turn_log", [])):
-            director_result = self._director_result_from_log(record)
-            turns.append(
-                {
-                    "turn_index": record.get("turn_index", index + 1),
-                    "timestamp": record.get("timestamp"),
-                    "user_input": record.get("user_input", {}),
-                    "plan": record.get("plan", {}),
-                    "env_feedback": {"character_feedback": record.get("characters", [])},
-                    "director_result": director_result,
-                }
-            )
-        return turns
-
-    def _director_result_from_log(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Return the current director-result log payload, with old-log fallback."""
-        source = record.get("director_result")
-        if not isinstance(source, dict):
-            source = record.get("integrate", {})
-        if not isinstance(source, dict):
-            source = {}
-        interaction = source.get("interaction", {})
-        return {
-            "time": source.get("time", ""),
-            "scene": source.get("scene", ""),
-            "narrative": source.get("narrative", {}),
-            "summary": source.get("summary", ""),
-            "goal_update": source.get("goal_update", {}),
-            "goal_resolution": source.get("goal_resolution", {}),
-            "ending": source.get("ending", {}),
-            "interaction": interaction if isinstance(interaction, dict) else {},
-            "state_update": source.get("state_update", {}),
-        }
-
-    def _compact_plan_for_log(self, plan: dict[str, Any]) -> dict[str, Any]:
-        characters = []
-        for character in plan.get("characters", []):
-            if not isinstance(character, dict):
-                continue
-            characters.append(
-                {
-                    "id": character.get("id", ""),
-                    "name": character.get("name", character.get("id", "")),
-                    "order": character.get("order", 1),
-                }
-            )
-        return {
-            "player_input": plan.get("player_input", {}),
-            "context": plan.get("context", ""),
-            "characters": characters,
-        }
-
-    def _compact_character_feedback_for_log(
-        self,
-        env_feedback: dict[str, Any],
-        state_changes: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        characters = []
-        character_changes = state_changes.get("characters", {}) if isinstance(state_changes, dict) else {}
-        for feedback in env_feedback.get("character_feedback", []):
-            if not isinstance(feedback, dict):
-                continue
-            character_id = feedback.get("character_id", "")
-            characters.append(
-                {
-                    "character_id": character_id,
-                    "name": feedback.get("name", character_id),
-                    "order": feedback.get("order", 1),
-                    "response": feedback.get("response", ""),
-                    "raw_text": feedback.get("raw_text", ""),
-                    "emotion": feedback.get("emotion", ""),
-                    "state_update": self._display_state_changes(
-                        character_changes.get(character_id, {}),
-                        hidden_fields={"emotion", "location"},
-                    ),
-                    "memory_append": feedback.get("memory_append", ""),
-                }
-            )
-        return characters
-
-    def _compact_director_result_for_log(
-        self,
-        director_result: dict[str, Any],
-        state_changes: dict[str, Any],
-    ) -> dict[str, Any]:
-        interaction = director_result.get("interaction", {})
-        return {
-            "time": director_result.get("time", ""),
-            "scene": director_result.get("scene", ""),
-            "narrative": director_result.get("narrative", {}),
-            "summary": director_result.get("summary", ""),
-            "goal_update": director_result.get("goal_update", {}),
-            "goal_resolution": director_result.get("goal_resolution", {}),
-            "ending": director_result.get("ending", {}),
-            "state_update": {
-                "world_state": self._display_state_changes(
-                    state_changes.get("world_state", {}),
-                    hidden_fields={"time"},
-                ),
-                "user_state": self._display_state_changes(
-                    state_changes.get("user_state", {}),
-                    hidden_fields={"location"},
-                ),
-            },
-            "interaction": {
-                "mode": INPUT_MODE_HYBRID,
-                "options": interaction.get("options", []) if isinstance(interaction, dict) else [],
-            },
-        }
-
-    def _display_state_changes(self, changes: Any, hidden_fields: set[str]) -> dict[str, Any]:
-        """Keep state changes useful for turn-log display without affecting persisted state."""
-        if not isinstance(changes, dict):
-            return {}
-        return {
-            key: value
-            for key, value in changes.items()
-            if key.split(".", 1)[0] not in hidden_fields
-        }
-
     def _finalize_turn(
         self,
-        user_input: dict[str, Any],
-        plan: dict[str, Any],
+        turn_record: dict[str, Any],
         env_feedback: dict[str, Any],
-        director_result: dict[str, Any],
+        state_before: dict[str, Any],
     ) -> dict[str, Any]:
-        character_updates = {
-            item.get("character_id"): {
-                "emotion": item.get("emotion", ""),
-                "state_update": item.get("state_update", {}),
-                "memory_append": item.get("memory_append", ""),
-            }
-            for item in env_feedback.get("character_feedback", [])
-            if item.get("character_id")
+        update_result = self.state_manager.apply_update(turn_record)
+        director_result = {
+            **(turn_record.get("director_resolve") or {}),
+            **(turn_record.get("director_narrative") or {}),
         }
-        state_update = self._state_update_with_narrative_location(director_result)
-        state_changes = self.state_manager.apply_state_update(
-            {
-                **state_update,
-                "characters": character_updates,
-            }
-        )
-        goal_update_result = self.state_manager.apply_goal_update(director_result.get("goal_update", {}))
-        ending = self.state_manager.check_endings()
+        ending = update_result.get("ending", {})
         if ending and not ending.get("narrative"):
             ending_text = self.director.ending(
                 ending=ending,
@@ -659,22 +604,13 @@ class GameApp:
                 env_feedback=env_feedback,
             ).get("narrative", "")
             ending = self.state_manager.update_ending_narrative(ending_text) or ending
-        director_result = dict(director_result)
-        director_result["goal_update"] = {
-            "checkpoints": goal_update_result.get("checkpoints", []),
+        turn_record["director_resolve"] = {
+            **(turn_record.get("director_resolve") or {}),
+            "ending": ending,
         }
-        director_result["goal_resolution"] = {
-            "completed_goals": goal_update_result.get("completed_goals", []),
-            "available_goals": goal_update_result.get("available_goals", []),
-        }
-        director_result["ending"] = ending
-        turn_index = self.state_manager.get_turn_count() + 1
-        turn_record = {
-            "turn_index": turn_index,
-            "user_input": user_input,
-            "plan": self._compact_plan_for_log(plan),
-            "characters": self._compact_character_feedback_for_log(env_feedback, state_changes),
-            "director_result": self._compact_director_result_for_log(director_result, state_changes),
+        director_result = {
+            **(turn_record.get("director_resolve") or {}),
+            **(turn_record.get("director_narrative") or {}),
         }
         self.state_manager.append_log(turn_record)
         interaction = director_result.get("interaction", {})
@@ -684,12 +620,10 @@ class GameApp:
         current_logs = self.state_manager.get_logs(limit=50)
         return {
             "game_id": self.game_id,
-            "plan": plan,
-            "env_feedback": env_feedback,
-            "director_result": director_result,
+            "turn_record": turn_record,
             "state": state_after,
             "ui": {
-                "turns": self._build_ui_turns(current_logs),
+                "turns": current_logs.get("turn_log", []),
                 "messages": current_logs.get("turn_log", []),
                 "latest_turn": turn_record,
                 "interaction": {"mode": self.next_input_mode, "options": self.next_choices},
@@ -699,20 +633,33 @@ class GameApp:
             },
         }
 
-    def _state_update_with_narrative_location(self, director_result: dict[str, Any]) -> dict[str, Any]:
-        state_update = dict(director_result.get("state_update") or {})
-        scene = director_result.get("scene", {})
-        scene_id = scene.get("id", "") if isinstance(scene, dict) else ""
-        time_text = str(director_result.get("time") or "").strip()
-        if scene_id:
-            user_state = dict(state_update.get("user_state") or {})
-            user_state.setdefault("location", scene_id)
-            state_update["user_state"] = user_state
-        if time_text:
-            world_state = dict(state_update.get("world_state") or {})
-            world_state.setdefault("time", time_text)
-            state_update["world_state"] = world_state
-        return state_update
+    def _append_event_memories(
+        self,
+        turn_record: dict[str, Any],
+        state_before: dict[str, Any],
+    ) -> None:
+        request = self.state_manager.story_domain.build_event_memory_request(
+            turn_record,
+            state_before,
+            self.state_manager.static_state.get("story", {}),
+        )
+        if not request:
+            return
+        known_characters = state_before.get("characters", {}) if isinstance(state_before.get("characters"), dict) else {}
+        character_ids = [item for item in request.get("characters", []) if item in known_characters]
+        if not character_ids:
+            return
+
+        event_context = {key: value for key, value in request.items() if key != "characters"}
+        with ThreadPoolExecutor(max_workers=max(1, len(character_ids))) as executor:
+            futures = {
+                executor.submit(self.environment.character_agent.remember_event, character_id, event_context, state_before): character_id
+                for character_id in character_ids
+            }
+            for future, character_id in futures.items():
+                character = ((future.result().get("characters") or {}).get(character_id) or {})
+                if isinstance(character, dict):
+                    turn_record.setdefault("characters", {}).setdefault(character_id, {}).update(character)
 
 
 def build_app(settings: AppConfig) -> GameApp:
