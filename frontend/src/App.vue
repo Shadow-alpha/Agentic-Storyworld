@@ -91,8 +91,7 @@ const storyHint = computed(() => {
     return {
       label: "结局",
       title: story.ending_state.title || "结局达成",
-      meta: "故事已经抵达终点",
-      detail: story.ending_state.description || "",
+      meta: "已结束",
     };
   }
   const title = story.title || story.current || "当前事件";
@@ -108,8 +107,7 @@ const storyHint = computed(() => {
     return {
       label: "事件未开始",
       title,
-      meta: parts.join(" / ") || "等待合适时机",
-      detail: story.pace?.start_at ? `计划时间：${story.pace.start_at}` : "",
+      meta: parts.join(" / ") || "等待中",
     };
   }
   const modeLabels = {
@@ -124,8 +122,7 @@ const storyHint = computed(() => {
   return {
     label: modeLabels[story.mode] || "事件进行中",
     title,
-    meta: parts.join(" / ") || "剧情正在流动",
-    detail: story.event_progress || story.push || "",
+    meta: parts.join(" / ") || "推进中",
   };
 });
 
@@ -779,7 +776,6 @@ onMounted(async () => {
             <span class="story-alert-label">{{ storyHint.label }}</span>
             <strong>{{ storyHint.title }}</strong>
             <span v-if="storyHint.meta">{{ storyHint.meta }}</span>
-            <small v-if="storyHint.detail">{{ storyHint.detail }}</small>
           </button>
 
           <div class="content-body">

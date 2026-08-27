@@ -57,12 +57,13 @@
 
 .story-alert-strip {
   flex: 0 0 auto;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   display: flex;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
   margin: -2px 0 12px;
-  padding: 11px 14px;
+  padding: 9px 13px;
   border-radius: 16px;
   color: var(--ink);
   text-align: left;
