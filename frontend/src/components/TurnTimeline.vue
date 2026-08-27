@@ -23,6 +23,10 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  gameId: {
+    type: String,
+    default: "",
+  },
 });
 
 defineEmits(["pick-option", "submit-edit-latest-turn"]);
@@ -70,6 +74,7 @@ watch(
       :interactive="interactive && index === turns.length - 1"
       :stat-rules="statRules"
       :state="state"
+      :game-id="gameId"
       @pick-option="$emit('pick-option', $event)"
       @submit-edit-latest-turn="$emit('submit-edit-latest-turn', $event)"
     />

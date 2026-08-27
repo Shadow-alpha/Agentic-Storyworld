@@ -82,10 +82,73 @@ const isGameEnded = computed(() => !!endingState.value?.is_ended);
 const inputDisabled = computed(() => {
   return isSending.value || isGameEnded.value || needsPlayerCustomization.value;
 });
+const storyHint = computed(() => {
+  const story = appState.state?.story || {};
+  if (!story.current && !story.ending_state?.is_ended) {
+    return null;
+  }
+  if (story.ending_state?.is_ended) {
+    return {
+      label: "结局",
+      title: story.ending_state.title || "结局达成",
+      meta: "故事已经抵达终点",
+      detail: story.ending_state.description || "",
+    };
+  }
+  const title = story.title || story.current || "当前事件";
+  if (story.status === "unstarted") {
+    const parts = [];
+    if (story.turns_until_start !== null && story.turns_until_start !== undefined) {
+      parts.push(`剩余 ${story.turns_until_start} 回合`);
+    }
+    const minutes = formatMinutes(story.minutes_until_start);
+    if (minutes) {
+      parts.push(`约 ${minutes}`);
+    }
+    return {
+      label: "事件未开始",
+      title,
+      meta: parts.join(" / ") || "等待合适时机",
+      detail: story.pace?.start_at ? `计划时间：${story.pace.start_at}` : "",
+    };
+  }
+  const modeLabels = {
+    pressure: "事件推进中",
+    closure: "事件收束中",
+    time_skip: "时间流逝中",
+  };
+  const parts = [
+    story.pace?.soft_turns ? `回合 ${story.turns_since_started || 0}/${story.pace.soft_turns}` : "",
+    story.pace?.soft_duration ? `时间 ${story.elapsed_minutes_since_started || 0}/${story.pace.soft_duration} 分钟` : "",
+  ].filter(Boolean);
+  return {
+    label: modeLabels[story.mode] || "事件进行中",
+    title,
+    meta: parts.join(" / ") || "剧情正在流动",
+    detail: story.event_progress || story.push || "",
+  };
+});
 
 function setConnectionStatus(text, healthy = true) {
   connectionStatus.text = text;
   connectionStatus.healthy = healthy;
+}
+
+function formatMinutes(minutes) {
+  if (minutes === null || minutes === undefined || minutes === "") {
+    return "";
+  }
+  const value = Number(minutes);
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  if (value >= 1440) {
+    return `${Math.floor(value / 1440)} 天 ${value % 1440} 分钟`;
+  }
+  if (value >= 60) {
+    return `${Math.floor(value / 60)} 小时 ${value % 60} 分钟`;
+  }
+  return `${value} 分钟`;
 }
 
 function createEmptyStreamState() {
@@ -707,6 +770,18 @@ onMounted(async () => {
             </button>
           </nav>
 
+          <button
+            v-if="storyHint"
+            type="button"
+            class="story-alert-strip"
+            @click="activePanel = 'story'"
+          >
+            <span class="story-alert-label">{{ storyHint.label }}</span>
+            <strong>{{ storyHint.title }}</strong>
+            <span v-if="storyHint.meta">{{ storyHint.meta }}</span>
+            <small v-if="storyHint.detail">{{ storyHint.detail }}</small>
+          </button>
+
           <div class="content-body">
             <PlayerCustomizationForm
               v-if="activePanel === 'player_profile' && needsPlayerCustomization"
@@ -720,6 +795,7 @@ onMounted(async () => {
               :opening-text="openingText"
               :stat-rules="appState.state.stat_rules"
               :state="appState.state"
+              :game-id="appState.gameId"
               :interactive="!inputDisabled"
               @pick-option="onPickChoice"
               @submit-edit-latest-turn="onSubmitEditedLatestTurn"

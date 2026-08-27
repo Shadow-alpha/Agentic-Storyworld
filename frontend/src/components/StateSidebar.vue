@@ -42,6 +42,7 @@ const selectedCharacter = computed(() => {
   }
   return props.state?.characters?.[props.selectedCharacterId] || null;
 });
+const selectedCharacterMemories = computed(() => parseMemory(selectedCharacter.value?.memory));
 const selectedCharacterId = computed(() => props.selectedCharacterId || "");
 const mapLocations = computed(() => props.state?.world?.map_locations || {});
 const statRules = computed(() => props.state?.stat_rules || props.state?.config?.stat_rules || {});
@@ -162,6 +163,35 @@ function formatFieldValue(value, key = "") {
     return JSON.stringify(value, null, 2);
   }
   return value;
+}
+
+function parseMemory(memoryText) {
+  const entries = [];
+  let current = null;
+  for (const rawLine of String(memoryText || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const turnMatch = line.match(/^##\s*Turn\s+(\d+)/i);
+    if (turnMatch) {
+      current = {
+        turn: Number(turnMatch[1]),
+        title: `Turn ${turnMatch[1]}`,
+        lines: [],
+      };
+      entries.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { turn: -1, title: "Memory", lines: [] };
+      entries.push(current);
+    }
+    current.lines.push(line);
+  }
+  return entries
+    .filter((entry) => entry.lines.length)
+    .sort((left, right) => right.turn - left.turn);
 }
 
 function openDetail(type) {
@@ -397,6 +427,15 @@ function markCharacterImageFailed(characterId) {
                 ></span>
               </div>
             </div>
+          </div>
+        </div>
+        <div v-if="selectedCharacterMemories.length" class="subcard-block">
+          <div class="meta-label">角色记忆</div>
+          <div class="memory-list">
+            <article v-for="entry in selectedCharacterMemories" :key="entry.title" class="memory-entry">
+              <strong>{{ entry.title }}</strong>
+              <p>{{ entry.lines.join("\n") }}</p>
+            </article>
           </div>
         </div>
       </div>

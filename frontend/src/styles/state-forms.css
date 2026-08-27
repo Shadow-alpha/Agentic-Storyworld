@@ -519,3 +519,33 @@
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.64);
 }
+
+.memory-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.memory-entry {
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(216, 204, 186, 0.7);
+}
+
+.memory-entry strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.memory-entry p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}

@@ -24,12 +24,18 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  gameId: {
+    type: String,
+    default: "",
+  },
 });
 
 const emit = defineEmits(["pick-option", "submit-edit-latest-turn"]);
 const isOpen = ref(props.openByDefault || props.turn.is_streaming);
 const isEditingInput = ref(false);
 const editInputText = ref("");
+const failedCharacterImages = ref({});
+const characterResponsesExpanded = ref(false);
 
 watch(
   () => [props.openByDefault, props.turn.is_streaming],
@@ -212,11 +218,11 @@ const directorUpdateGroups = computed(() => {
   const groups = [
     {
       label: "玩家",
-      rows: buildUpdateRows(update.player || {}),
+      rows: buildUpdateRows(update.player || {}).filter((row) => row.path !== "time"),
     },
     {
       label: "世界",
-      rows: buildUpdateRows(update.world || {}),
+      rows: buildUpdateRows(update.world || {}).filter((row) => row.path !== "time"),
     },
   ];
   return groups.filter((group) => group.rows.length);
@@ -224,16 +230,17 @@ const directorUpdateGroups = computed(() => {
 
 const storyNoticeItems = computed(() => {
   const items = [];
-  if (storyUpdate.value?.text || storyUpdate.value?.status) {
+  if (storyUpdate.value?.text || storyUpdate.value?.event_progress || storyUpdate.value?.status) {
     items.push({
       key: "story-progress",
-      text: `剧情推进：${storyUpdate.value.text || storyUpdate.value.status}`,
+      status: storyStatusLabel(storyUpdate.value.status),
+      text: storyUpdate.value.event_progress || storyUpdate.value.text || "本轮暂无新的事件进展。",
     });
   }
   if (ending.value?.is_ended) {
     items.unshift({
       key: "ending",
-      text: `结局达成：${ending.value.title || "终局"}`,
+      text: ending.value.title || "终局",
       ending: true,
     });
   }
@@ -289,8 +296,33 @@ function onEditKeydown(event) {
   submitInputEdit();
 }
 
+function toggleCharacterResponses() {
+  if (!executionCards.value.length) {
+    return;
+  }
+  characterResponsesExpanded.value = !characterResponsesExpanded.value;
+}
+
+function isCharacterResponseOpen(card) {
+  return card.isPlanned || card.isResponding || characterResponsesExpanded.value;
+}
+
 function characterName(characterId, fallback = "") {
   return characterNameMap.value?.[characterId] || fallback || "角色";
+}
+
+function characterImageUrl(characterId) {
+  if (!props.gameId || !characterId || failedCharacterImages.value[characterId]) {
+    return "";
+  }
+  return `/api/game/image/${encodeURIComponent(`character_${characterId}.png`)}?game_id=${encodeURIComponent(props.gameId)}`;
+}
+
+function markCharacterImageFailed(characterId) {
+  failedCharacterImages.value = {
+    ...failedCharacterImages.value,
+    [characterId]: true,
+  };
 }
 
 function locationName(locationId) {
@@ -374,6 +406,14 @@ function splitChangeText(value) {
   };
 }
 
+function storyStatusLabel(status) {
+  return {
+    unstarted: "未开始",
+    in_progress: "进行中",
+    completed: "已完成",
+  }[status] || status || "进行中";
+}
+
 function statDisplayName(statName) {
   return (
     props.statRules?.[statName]?.display_name ||
@@ -436,7 +476,7 @@ function buildUpdateRows(stateUpdate) {
       after: formatValue(change.after, normalizedPath),
       reason: isObjectValue ? row.value.reason || "" : "",
     };
-  });
+  }).filter((row) => row.path !== "emotion");
 }
 
 </script>
@@ -489,17 +529,30 @@ function buildUpdateRows(stateUpdate) {
 
     <div v-if="executionRows.length" class="character-order-stack">
       <div v-for="row in executionRows" :key="row.order" class="character-order-row">
-        <article
+        <details
           v-for="card in row.cards"
           :key="card.id"
           class="character-mini-bubble"
           :class="{ 'is-active': card.isPlanned || card.isResponding }"
+          :open="isCharacterResponseOpen(card)"
         >
-          <div class="mini-bubble-header">
-            <strong>{{ card.name }}</strong>
+          <summary class="mini-bubble-header" @click.prevent="toggleCharacterResponses">
+            <span class="mini-bubble-identity">
+              <img
+                v-if="characterImageUrl(card.id)"
+                class="mini-character-avatar"
+                :src="characterImageUrl(card.id)"
+                :alt="card.name"
+                @error="markCharacterImageFailed(card.id)"
+              />
+              <span v-else class="mini-character-avatar mini-character-avatar-fallback">
+                {{ card.name.slice(0, 1) }}
+              </span>
+              <strong>{{ card.name }}</strong>
+            </span>
             <span v-if="card.isResponding" class="live-badge">正在回应...</span>
             <span v-else-if="card.isPlanned" class="live-badge">准备回应...</span>
-          </div>
+          </summary>
           <div class="mini-bubble-text">
             {{
               card.response ||
@@ -507,7 +560,7 @@ function buildUpdateRows(stateUpdate) {
               (card.isPlanned || card.isResponding ? `${card.name} 正在回应...` : "")
             }}
           </div>
-        </article>
+        </details>
       </div>
     </div>
 
@@ -547,9 +600,11 @@ function buildUpdateRows(stateUpdate) {
 
       <div v-if="characterOutcomeCards.length" class="outcome-group-list">
         <article v-for="card in characterOutcomeCards" :key="`outcome-${card.id}`" class="outcome-group">
-          <strong>{{ card.name }}</strong>
+          <div class="outcome-character-header">
+            <strong>{{ card.name }}</strong>
+            <span v-if="card.emotion" class="emotion-pill">{{ card.emotion }}</span>
+          </div>
           <div class="state-change-list">
-            <span v-if="card.emotion" class="state-chip">情绪 {{ card.emotion }}</span>
             <div
               v-for="row in card.updateRows"
               :key="`${card.id}-${row.label}-${row.before}-${row.after}`"
@@ -589,13 +644,16 @@ function buildUpdateRows(stateUpdate) {
       </div>
 
       <div v-if="storyNoticeItems.length" class="turn-meta-strip">
-        <span
+        <article
           v-for="item in storyNoticeItems"
           :key="item.key"
+          class="story-progress-card"
           :class="{ 'completion-badge': item.ending }"
         >
-          {{ item.text }}
-        </span>
+          <strong>{{ item.ending ? "结局达成" : "事件进展" }}</strong>
+          <span v-if="item.status" class="story-status-pill">{{ item.status }}</span>
+          <p>{{ item.text }}</p>
+        </article>
       </div>
     </section>
 
